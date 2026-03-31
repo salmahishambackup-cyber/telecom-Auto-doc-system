@@ -1,0 +1,29 @@
+target:
+  path: ""
+  include_patterns:
+    - "**/*.py"
+  exclude_patterns:
+    - "**/__pycache__/**"
+    - "**/venv/**"
+    - "**/.venv/**"
+    - "**/node_modules/**"
+    - "**/.git/**"
+    - "**/dist/**"
+    - "**/build/**"
+    - "**/*.egg-info/**"
+
+analysis:
+  max_file_size_bytes: 5242880
+  parse_timeout_seconds: 30
+  detect_encodings: true
+  data_flow_patterns:
+    db_read: ["session.query", "cursor.execute", "SELECT", ".find(", ".find_one("]
+    db_write: ["session.add", "session.commit", "cursor.execute", "INSERT", "UPDATE", "DELETE", ".insert_one(", ".update_one("]
+    api_call: ["requests.get", "requests.post", "requests.put", "requests.delete", "httpx.", "aiohttp.", "urllib.request"]
+    file_io: ["open(", "pathlib.Path", "shutil.", "os.remove", "os.rename"]
+    env_var: ["os.environ", "os.getenv", "dotenv"]
+    message_queue: ["pika.", "kombu.", "celery", "kafka.", "confluent_kafka", "redis.publish", "redis.subscribe"]
+    socket: ["socket.", "zmq.", "websocket"]
+
+output:
+  artifacts_dir: "output/artifacts"
