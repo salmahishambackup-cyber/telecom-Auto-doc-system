@@ -10,7 +10,8 @@ An intelligent system that analyzes Python codebases in the telecom domain and p
 
 ```
 telecom-Auto-doc-system/
-├── main.py                          # CLI orchestrator
+├── usage.ipynb                      # ⭐ Start here — Jupyter notebook
+├── main.py                          # Pipeline API + optional CLI
 ├── config.yaml                      # Full configuration
 ├── requirements.txt                 # Dependencies
 ├── models/
@@ -39,29 +40,51 @@ telecom-Auto-doc-system/
 
 ## Quick Start
 
-### Install dependencies
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Run against a codebase
+### 2. Open the notebook
 
 ```bash
-python main.py --target /path/to/your/codebase --phases 1,2
+jupyter notebook usage.ipynb
 ```
 
-### Run only Phase 1
+The notebook walks through the full workflow:
+- Running Phase 1 & 2 against any Python codebase
+- Exploring the returned artifacts (file inventory, AST nodes, call graph, dependencies, data flow, component map)
+- Running individual phases
+- Exporting artifacts as JSON
+- Resuming from previously saved artifacts
 
-```bash
-python main.py --target /path/to/your/codebase --phases 1
+### 3. Or use from any Python script / notebook cell
+
+```python
+from main import run_pipeline
+
+artifacts = run_pipeline(target="/path/to/your/codebase", phases="1,2")
+
+# Explore results
+print(f"Files found: {artifacts.file_inventory.total_files}")
+print(f"AST nodes:   {len(artifacts.ast_nodes.nodes)}")
+print(f"Call graph:   {len(artifacts.call_graph.entries)} entries")
+print(f"External deps: {len(artifacts.dependency_tree.external_packages)}")
+print(f"Data flows:   {len(artifacts.data_flow.entries)}")
+print(f"Components:   {len(artifacts.component_map.components)}")
 ```
 
-### Resume from existing artifacts
+### `run_pipeline` parameters
 
-```bash
-python main.py --target /path/to/your/codebase --phases 1,2 --resume
-```
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `target` | `str` | *(required)* | Path to the Python codebase to analyse |
+| `phases` | `str \| list` | `"1,2"` | Which phases to run (comma-separated or list) |
+| `config_path` | `str` | `"config.yaml"` | Path to the YAML configuration file |
+| `resume` | `bool` | `False` | Skip phases whose artifacts already exist on disk |
+| `artifacts_dir` | `str` | `""` | Override the output directory for JSON artifacts |
+| `log_level` | `str` | `"INFO"` | Logging level (`DEBUG`, `INFO`, `WARNING`, …) |
 
 ## Running Tests
 

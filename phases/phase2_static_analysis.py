@@ -290,11 +290,16 @@ def run_phase2(*, config: dict[str, Any], artifacts: PhaseArtifacts) -> None:
     # Data flow detection
     # ------------------------------------------------------------------
     # Allow pattern overrides from config
+    # Config patterns are plain substring strings, so escape them for
+    # regex compilation.
+    import re as _re
+
     analysis_cfg = config.get("analysis", {})
     raw_patterns = analysis_cfg.get("data_flow_patterns", {})
     if raw_patterns:
         patterns = {
-            FlowType(key): value for key, value in raw_patterns.items()
+            FlowType(key): [_re.escape(p) for p in value]
+            for key, value in raw_patterns.items()
         }
     else:
         patterns = None  # use defaults
