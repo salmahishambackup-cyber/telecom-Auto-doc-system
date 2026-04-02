@@ -24,6 +24,7 @@ import yaml
 from models.schemas import PhaseArtifacts
 from phases.phase1_discovery import run_phase1
 from phases.phase2_static_analysis import run_phase2
+from phases.phase3_docstrings import run_phase3
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,13 @@ logger = logging.getLogger(__name__)
 _PHASE_FN = {
     "1": run_phase1,
     "2": run_phase2,
+    "3": run_phase3,
 }
 
 _PHASE_ARTIFACT_KEYS = {
     "1": "file_inventory",
     "2": "ast_nodes",  # proxy: if ast_nodes exists, phase 2 ran
+    "3": "docstrings",
 }
 
 
@@ -75,6 +78,7 @@ def _load_existing_artifacts(
         ComponentMap,
         DataFlow,
         DependencyTree,
+        Docstrings,
         FileInventory,
     )
 
@@ -86,6 +90,7 @@ def _load_existing_artifacts(
         "dependency_tree": ("dependency_tree.json", DependencyTree),
         "data_flow": ("data_flow.json", DataFlow),
         "component_map": ("component_map.json", ComponentMap),
+        "docstrings": ("docstrings.json", Docstrings),
     }
     for attr, (filename, model_cls) in name_map.items():
         fp = artifacts_dir / filename
@@ -119,7 +124,7 @@ def _setup_logging(level: str = "INFO") -> None:
 def run_pipeline(
     target: str,
     *,
-    phases: str | list[str] = "1,2",
+    phases: str | list[str] = "1,2,3",
     config_path: str = "config.yaml",
     resume: bool = False,
     artifacts_dir: str = "",
@@ -241,8 +246,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--phases",
-        default="1,2",
-        help="Comma-separated phases to run, e.g. '1,2' (default: 1,2).",
+        default="1,2,3",
+        help="Comma-separated phases to run, e.g. '1,2,3' (default: 1,2,3).",
     )
     parser.add_argument(
         "--resume",
