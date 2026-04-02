@@ -17,6 +17,10 @@ from models.schemas import (
     ComponentEntry,
     ComponentMap,
     PhaseArtifacts,
+    DocstringEntry,
+    DocstringFailure,
+    ModuleDocstring,
+    Docstrings,
 )
 
 __all__ = [
@@ -38,4 +42,8 @@ __all__ = [
     "ComponentEntry",
     "ComponentMap",
     "PhaseArtifacts",
+    "DocstringEntry",
+    "DocstringFailure",
+    "ModuleDocstring",
+    "Docstrings",
 ]
