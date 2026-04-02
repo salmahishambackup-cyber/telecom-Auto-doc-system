@@ -19,6 +19,11 @@ class HuggingFaceProvider(BaseLLMProvider):
     Ollama cannot be installed.  It loads the model weights on construction
     and runs inference entirely in-process via the ``transformers`` library.
 
+    The heavy model/tokenizer objects are cached at the **class level** so
+    that multiple ``HuggingFaceProvider`` instances (or repeated
+    ``create_provider`` calls) reuse the same loaded model instead of
+    re-downloading and re-loading it every time.
+
     Parameters
     ----------
     model_name:
@@ -30,6 +35,9 @@ class HuggingFaceProvider(BaseLLMProvider):
         GPU is available and ``"cpu"`` otherwise.  Pass an explicit string to
         override the auto-detection.
     """
+
+    # Class-level cache: (model_name, resolved_device) → pipeline object
+    _pipeline_cache: dict[tuple[str, str], Any] = {}
 
     def __init__(
         self,
@@ -56,36 +64,46 @@ class HuggingFaceProvider(BaseLLMProvider):
         else:
             self.device = device
 
-        logger.info(
-            "HuggingFaceProvider: loading model %s on %s", model_name, self.device
-        )
-        t0 = time.monotonic()
+        cache_key = (model_name, self.device)
+        if cache_key in HuggingFaceProvider._pipeline_cache:
+            logger.info(
+                "HuggingFaceProvider: reusing cached model %s on %s",
+                model_name,
+                self.device,
+            )
+            self._pipeline = HuggingFaceProvider._pipeline_cache[cache_key]
+        else:
+            logger.info(
+                "HuggingFaceProvider: loading model %s on %s", model_name, self.device
+            )
+            t0 = time.monotonic()
 
-        dtype = torch.float16 if self.device == "cuda" else torch.float32
-        device_map = "auto" if self.device == "cuda" else None
+            dtype = torch.float16 if self.device == "cuda" else torch.float32
+            device_map = "auto" if self.device == "cuda" else None
 
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=dtype,
-            device_map=device_map,
-        )
-        if device_map is None:
-            model = model.to(self.device)
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=dtype,
+                device_map=device_map,
+            )
+            if device_map is None:
+                model = model.to(self.device)
 
-        self._pipeline = pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            device=None if self.device == "cuda" else self.device,
-            max_new_tokens=max_new_tokens,
-            max_length=None,
-        )
+            self._pipeline = pipeline(
+                "text-generation",
+                model=model,
+                tokenizer=tokenizer,
+                device=None if self.device == "cuda" else self.device,
+                max_new_tokens=max_new_tokens,
+                max_length=None,
+            )
+            HuggingFaceProvider._pipeline_cache[cache_key] = self._pipeline
 
-        elapsed = time.monotonic() - t0
-        logger.info(
-            "HuggingFaceProvider: model loaded in %.1fs", elapsed
-        )
+            elapsed = time.monotonic() - t0
+            logger.info(
+                "HuggingFaceProvider: model loaded in %.1fs", elapsed
+            )
 
     # ------------------------------------------------------------------
     # BaseLLMProvider interface

@@ -29,10 +29,10 @@ output:
   artifacts_dir: "output/artifacts"
 
 llm:
-  # Active provider: "ollama" | "huggingface" | "openai" | "anthropic"
+  # Active provider: "ollama" | "huggingface"
   # Switch to "huggingface" when running in Google Colab or any environment
   # where Ollama is unavailable but pip packages work.
-  provider: "ollama"
+  provider: "huggingface"
 
   ollama:
     model_name: "qwen2.5-coder:7b"
@@ -44,25 +44,16 @@ llm:
     max_new_tokens: 512
     # device: "auto"  # auto-detects cuda/cpu; override with "cuda" or "cpu"
 
-  openai:
-    model: "gpt-4o-mini"
-    timeout: 60
-
-  anthropic:
-    model: "claude-sonnet-4-20250514"
-    timeout: 60
-    max_tokens: 2048
-
   fallback:
     enabled: true
-    provider: "huggingface"   # provider to use as fallback
+    provider: "ollama"   # provider to use as fallback
     confidence_threshold: 0.7
 
 docstring:
   # Legacy config kept for backwards compatibility with phase3_docstrings.py.
   # New code should use the top-level "llm" section above.
-  primary_provider: "ollama"
-  fallback_provider: "huggingface"
+  primary_provider: "huggingface"
+  fallback_provider: "ollama"
   confidence_threshold: 0.7
   max_retries: 2
   concurrency: 4
@@ -70,10 +61,3 @@ docstring:
     model: "qwen2.5-coder:7b"
     base_url: "http://localhost:11434"
     timeout: 60
-  openai:
-    model: "gpt-4o-mini"
-    timeout: 60
-  anthropic:
-    model: "claude-sonnet-4-20250514"
-    timeout: 60
-    max_tokens: 2048

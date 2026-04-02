@@ -46,18 +46,6 @@ def create_provider(config: dict[str, Any]) -> BaseLLMProvider:
         settings = llm_config.get("huggingface", {})
         return HuggingFaceProvider(**settings)
 
-    if provider_name == "openai":
-        from llm.openai_provider import OpenAIProvider  # noqa: PLC0415
-
-        settings = llm_config.get("openai", {})
-        return OpenAIProvider(**settings)
-
-    if provider_name == "anthropic":
-        from llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
-
-        settings = llm_config.get("anthropic", {})
-        return AnthropicProvider(**settings)
-
     raise ValueError(f"Unknown LLM provider: {provider_name!r}")
 
 

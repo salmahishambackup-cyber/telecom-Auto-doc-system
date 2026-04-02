@@ -154,23 +154,6 @@ def _build_provider(provider_name: str, cfg: dict[str, Any]) -> BaseLLMProvider:
             max_new_tokens=hf_cfg.get("max_new_tokens", 512),
             device=hf_cfg.get("device", "auto"),
         )
-    if provider_name == "openai":
-        from llm.openai_provider import OpenAIProvider  # noqa: PLC0415
-
-        openai_cfg = cfg.get("openai", {})
-        return OpenAIProvider(
-            model=openai_cfg.get("model", "gpt-4o-mini"),
-            timeout=openai_cfg.get("timeout", 60),
-        )
-    if provider_name == "anthropic":
-        from llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
-
-        anthropic_cfg = cfg.get("anthropic", {})
-        return AnthropicProvider(
-            model=anthropic_cfg.get("model", "claude-sonnet-4-20250514"),
-            timeout=anthropic_cfg.get("timeout", 60),
-            max_tokens=anthropic_cfg.get("max_tokens", 2048),
-        )
     raise ValueError(f"Unknown LLM provider: {provider_name!r}")
 
 
