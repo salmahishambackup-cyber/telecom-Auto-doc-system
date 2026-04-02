@@ -323,7 +323,7 @@ async def _process_file(
             return entries, failures, None
 
         # Generate docstrings for each node (run in thread pool to avoid blocking)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for node in nodes:
             result = await loop.run_in_executor(
                 None,
@@ -456,7 +456,21 @@ def run_phase3(*, config: dict[str, Any], artifacts: PhaseArtifacts) -> None:
             if mod_doc is not None:
                 all_module_docs.append(mod_doc)
 
-    asyncio.run(_run_all())
+    # In Jupyter / Colab an event loop is already running, so plain
+    # ``asyncio.run()`` raises RuntimeError.  Use *nest_asyncio* to patch
+    # the running loop, then run the coroutine inside it.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop.is_running():
+        import nest_asyncio  # noqa: PLC0415
+
+        nest_asyncio.apply()
+        loop.run_until_complete(_run_all())
+    else:
+        asyncio.run(_run_all())
 
     # Compute summary stats
     successful = len(all_entries)
