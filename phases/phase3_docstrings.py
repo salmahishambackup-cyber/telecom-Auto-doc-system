@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tqdm.auto import tqdm
+
 from llm.base import BaseLLMProvider
 from llm.fallback import FallbackRouter
 from models.schemas import (
@@ -315,7 +317,13 @@ async def _process_file(
 
         # Generate docstrings for each node (run in thread pool to avoid blocking)
         loop = asyncio.get_event_loop()
-        for node in nodes:
+        node_pbar = tqdm(
+            nodes,
+            desc=f"  ↳ {Path(file_path).name}",
+            unit="node",
+            leave=False,
+        )
+        for node in node_pbar:
             result = await loop.run_in_executor(
                 None,
                 _generate_for_node,
@@ -330,6 +338,7 @@ async def _process_file(
                 entries.append(result)
             else:
                 failures.append(result)
+        node_pbar.close()
 
         # Module docstring
         module_doc = await loop.run_in_executor(
@@ -424,12 +433,25 @@ def run_phase3(*, config: dict[str, Any], artifacts: PhaseArtifacts) -> None:
             )
             for file_path, nodes in nodes_by_file.items()
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=False)
-        for entries, failures, mod_doc in results:
+        file_pbar = tqdm(total=len(nodes_by_file), desc="Phase 3 — Files", unit="file")
+        for coro in asyncio.as_completed(tasks):
+            entries, failures, mod_doc = await coro
             all_entries.extend(entries)
             all_failures.extend(failures)
             if mod_doc is not None:
                 all_module_docs.append(mod_doc)
+            file_pbar.update(1)
+        file_pbar.close()
+
+    # Support running inside Jupyter notebooks (which already have a running event loop)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import nest_asyncio  # noqa: PLC0415
+        nest_asyncio.apply()
 
     asyncio.run(_run_all())
 
