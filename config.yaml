@@ -1,0 +1,63 @@
+target:
+  path: ""
+  include_patterns:
+    - "**/*.py"
+  exclude_patterns:
+    - "**/__pycache__/**"
+    - "**/venv/**"
+    - "**/.venv/**"
+    - "**/node_modules/**"
+    - "**/.git/**"
+    - "**/dist/**"
+    - "**/build/**"
+    - "**/*.egg-info/**"
+
+analysis:
+  max_file_size_bytes: 5242880
+  parse_timeout_seconds: 30
+  detect_encodings: true
+  data_flow_patterns:
+    db_read: ["session.query", "cursor.execute", "SELECT", ".find(", ".find_one("]
+    db_write: ["session.add", "session.commit", "cursor.execute", "INSERT", "UPDATE", "DELETE", ".insert_one(", ".update_one("]
+    api_call: ["requests.get", "requests.post", "requests.put", "requests.delete", "httpx.", "aiohttp.", "urllib.request"]
+    file_io: ["open(", "pathlib.Path", "shutil.", "os.remove", "os.rename"]
+    env_var: ["os.environ", "os.getenv", "dotenv"]
+    message_queue: ["pika.", "kombu.", "celery", "kafka.", "confluent_kafka", "redis.publish", "redis.subscribe"]
+    socket: ["socket.", "zmq.", "websocket"]
+
+output:
+  artifacts_dir: "output/artifacts"
+
+llm:
+  # Active provider: "ollama" | "huggingface"
+  # Switch to "huggingface" when running in Google Colab or any environment
+  # where Ollama is unavailable but pip packages work.
+  provider: "huggingface"
+
+  ollama:
+    model_name: "qwen2.5-coder:7b"
+    base_url: "http://localhost:11434"
+    timeout: 60
+
+  huggingface:
+    model_name: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    max_new_tokens: 512
+    # device: "auto"  # auto-detects cuda/cpu; override with "cuda" or "cpu"
+
+  fallback:
+    enabled: true
+    provider: "ollama"   # provider to use as fallback
+    confidence_threshold: 0.7
+
+docstring:
+  # Legacy config kept for backwards compatibility with phase3_docstrings.py.
+  # New code should use the top-level "llm" section above.
+  primary_provider: "huggingface"
+  fallback_provider: "ollama"
+  confidence_threshold: 0.7
+  max_retries: 2
+  concurrency: 4
+  ollama:
+    model: "qwen2.5-coder:7b"
+    base_url: "http://localhost:11434"
+    timeout: 60
