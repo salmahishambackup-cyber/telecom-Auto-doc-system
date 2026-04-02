@@ -27,3 +27,21 @@ analysis:
 
 output:
   artifacts_dir: "output/artifacts"
+
+docstring:
+  primary_provider: "ollama"
+  fallback_provider: "openai"
+  confidence_threshold: 0.7
+  max_retries: 2
+  concurrency: 4
+  ollama:
+    model: "qwen2.5-coder:7b"
+    base_url: "http://localhost:11434"
+    timeout: 60
+  openai:
+    model: "gpt-4o-mini"
+    timeout: 60
+  anthropic:
+    model: "claude-sonnet-4-20250514"
+    timeout: 60
+    max_tokens: 2048
