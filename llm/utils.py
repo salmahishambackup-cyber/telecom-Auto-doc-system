@@ -62,6 +62,9 @@ def _strip_code_fences(text: str) -> str:
     return result if result else text
 
 
+_MIN_CODE_INDICATORS = 2
+
+
 def _looks_like_code(text: str) -> bool:
     """Return True if *text* appears to contain Python code, not just prose."""
     code_indicators = [
@@ -72,7 +75,7 @@ def _looks_like_code(text: str) -> bool:
         re.compile(r"^\s*from\s+\w+\s+import\s+", re.MULTILINE),
     ]
     matches = sum(1 for pat in code_indicators if pat.search(text))
-    return matches >= 2
+    return matches >= _MIN_CODE_INDICATORS
 
 
 _TRIPLE_QUOTE_RE = re.compile(
