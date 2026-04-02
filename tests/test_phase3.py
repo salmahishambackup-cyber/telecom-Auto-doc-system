@@ -53,7 +53,7 @@ class FakeLLMProvider(BaseLLMProvider):
 
     def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
         text = self.generate(prompt, **kwargs)
-        from llm.ollama_provider import _confidence_heuristic  # reuse shared logic
+        from llm.utils import _confidence_heuristic  # shared heuristic
 
         return text, _confidence_heuristic(text)
 

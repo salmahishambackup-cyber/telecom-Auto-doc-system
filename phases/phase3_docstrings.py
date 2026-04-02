@@ -138,6 +138,15 @@ def _build_provider(provider_name: str, cfg: dict[str, Any]) -> BaseLLMProvider:
             base_url=ollama_cfg.get("base_url", "http://localhost:11434"),
             timeout=ollama_cfg.get("timeout", 60),
         )
+    if provider_name == "huggingface":
+        from llm.huggingface_provider import HuggingFaceProvider  # noqa: PLC0415
+
+        hf_cfg = cfg.get("huggingface", {})
+        return HuggingFaceProvider(
+            model_name=hf_cfg.get("model_name", "Qwen/Qwen2.5-Coder-1.5B-Instruct"),
+            max_new_tokens=hf_cfg.get("max_new_tokens", 512),
+            device=hf_cfg.get("device", "auto"),
+        )
     if provider_name == "openai":
         from llm.openai_provider import OpenAIProvider  # noqa: PLC0415
 
@@ -367,9 +376,25 @@ def run_phase3(*, config: dict[str, Any], artifacts: PhaseArtifacts) -> None:
         )
 
     ds_cfg: dict[str, Any] = config.get("docstring", {})
-    primary_name: str = ds_cfg.get("primary_provider", "ollama")
-    fallback_name: str | None = ds_cfg.get("fallback_provider")
-    confidence_threshold: float = float(ds_cfg.get("confidence_threshold", 0.7))
+
+    # The top-level "llm" section takes precedence when present.
+    llm_cfg: dict[str, Any] = config.get("llm", {})
+    if llm_cfg.get("provider"):
+        primary_name: str = llm_cfg["provider"]
+        # Merge llm sub-sections into ds_cfg so _build_provider can find them
+        ds_cfg = {**ds_cfg, **llm_cfg}
+        fallback_llm = llm_cfg.get("fallback", {})
+        fallback_name: str | None = (
+            fallback_llm.get("provider") if fallback_llm.get("enabled") else None
+        )
+        confidence_threshold: float = float(
+            fallback_llm.get("confidence_threshold", ds_cfg.get("confidence_threshold", 0.7))
+        )
+    else:
+        primary_name = ds_cfg.get("primary_provider", "ollama")
+        fallback_name = ds_cfg.get("fallback_provider")
+        confidence_threshold = float(ds_cfg.get("confidence_threshold", 0.7))
+
     max_retries: int = int(ds_cfg.get("max_retries", 2))
     concurrency: int = int(ds_cfg.get("concurrency", 4))
 
