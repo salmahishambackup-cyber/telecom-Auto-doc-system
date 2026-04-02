@@ -18,6 +18,7 @@ from typing import Any
 
 from llm.base import BaseLLMProvider
 from llm.fallback import FallbackRouter
+from llm.utils import _clean_docstring
 from models.schemas import (
     ASTNode,
     CallGraph,
@@ -39,14 +40,20 @@ _DOCSTRING_SYSTEM = (
     "You are a technical documentation expert.  Write a concise Google-style "
     "Python docstring for the provided code snippet.  Output ONLY the docstring "
     "text (without the surrounding triple-quotes).  Include a one-line summary, "
-    "then (if applicable) Args:, Returns:, and Raises: sections."
+    "then (if applicable) Args:, Returns:, and Raises: sections.\n\n"
+    "IMPORTANT: Do NOT output any Python code, function definitions, class "
+    "definitions, or import statements.  Do NOT repeat the source code.  "
+    "Output ONLY the plain-text docstring content."
 )
 
 _MODULE_SYSTEM = (
     "You are a technical documentation expert.  Write a concise module-level "
     "Python docstring for the provided source file.  Output ONLY the docstring "
     "text (without the surrounding triple-quotes).  Summarise the module's "
-    "purpose in one paragraph."
+    "purpose in one paragraph.\n\n"
+    "IMPORTANT: Do NOT output any Python code, function definitions, class "
+    "definitions, or import statements.  Do NOT repeat the source code.  "
+    "Output ONLY the plain-text docstring content."
 )
 
 
@@ -227,7 +234,7 @@ def _generate_for_node(
                 function_name=func_name,
                 class_name=class_name,
                 node_type=node.node_type,
-                docstring=text.strip(),
+                docstring=_clean_docstring(text),
                 confidence=confidence,
                 provider_used=provider_used,
                 fallback_used=fallback_used,
@@ -275,7 +282,7 @@ def _generate_module_docstring(
         if text and text.strip():
             return ModuleDocstring(
                 file_path=file_path,
-                docstring=text.strip(),
+                docstring=_clean_docstring(text),
                 confidence=confidence,
                 provider_used=provider_used,
             )

@@ -150,6 +150,101 @@ class TestConfidenceHeuristic:
         score = _confidence_heuristic(text)
         assert score == pytest.approx(2 / 3)
 
+    def test_code_like_response_penalised(self) -> None:
+        from llm.utils import _confidence_heuristic
+
+        code = (
+            "import os\nfrom pathlib import Path\n\n"
+            "def foo(x):\n    self.x = x\n    return x"
+        )
+        assert _confidence_heuristic(code) == pytest.approx(0.1)
+
+
+# ---------------------------------------------------------------------------
+# Tests: _clean_docstring
+# ---------------------------------------------------------------------------
+
+class TestCleanDocstring:
+    """Tests for the _clean_docstring post-processing function."""
+
+    def test_passthrough_clean_docstring(self) -> None:
+        from llm.utils import _clean_docstring
+
+        text = "Do something useful.\n\nArgs:\n    x: The input."
+        assert _clean_docstring(text) == text
+
+    def test_strips_code_fences(self) -> None:
+        from llm.utils import _clean_docstring
+
+        raw = '```python\nDo something useful.\n\nArgs:\n    x: The input.\n```'
+        assert _clean_docstring(raw) == "Do something useful.\n\nArgs:\n    x: The input."
+
+    def test_extracts_docstring_from_code(self) -> None:
+        from llm.utils import _clean_docstring
+
+        raw = (
+            '```python\n'
+            'class Foo:\n'
+            '    """Do something useful.\n\n'
+            '    Args:\n'
+            '        x: The input.\n'
+            '    """\n'
+            '    def __init__(self):\n'
+            '        self.x = x\n'
+            '```'
+        )
+        result = _clean_docstring(raw)
+        assert "Do something useful." in result
+        assert "Args:" in result
+        assert "def __init__" not in result
+        assert "self.x = x" not in result
+
+    def test_deduplicates_repeated_content(self) -> None:
+        from llm.utils import _clean_docstring
+
+        block = "Summarise the module.\n\nArgs:\n    x: input."
+        doubled = f"{block} {block}"
+        result = _clean_docstring(doubled)
+        assert result == block
+
+    def test_strips_surrounding_triple_quotes(self) -> None:
+        from llm.utils import _clean_docstring
+
+        text = '"""Do something useful."""'
+        assert _clean_docstring(text) == "Do something useful."
+
+    def test_empty_input(self) -> None:
+        from llm.utils import _clean_docstring
+
+        assert _clean_docstring("") == ""
+        assert _clean_docstring("   ") == ""
+
+    def test_real_world_code_block_example(self) -> None:
+        """Reproduce the exact failure mode from the bug report."""
+        from llm.utils import _clean_docstring
+
+        raw = (
+            "```python\n"
+            "class PropensitySubsetSelector:\n"
+            '    """PSM-based candidate filtering.\"""\n'
+            "    \n"
+            "    def __init__(self, num_cols, cat_cols):\n"
+            '        """\n'
+            "        Initialize the PropensitySubsetSelector object.\n"
+            "\n"
+            "        Parameters:\n"
+            "            num_cols (list): Numerical column names.\n"
+            "            cat_cols (list): Categorical column names.\n"
+            '        """\n'
+            "        self.num_cols = num_cols\n"
+            "        self.cat_cols = cat_cols\n"
+            "```"
+        )
+        result = _clean_docstring(raw)
+        assert "PSM-based candidate filtering." in result
+        assert "self.num_cols" not in result
+        assert "def __init__" not in result
+
 
 # ---------------------------------------------------------------------------
 # Tests: OllamaProvider

@@ -79,6 +79,7 @@ class HuggingFaceProvider(BaseLLMProvider):
             tokenizer=tokenizer,
             device=None if self.device == "cuda" else self.device,
             max_new_tokens=max_new_tokens,
+            max_length=None,
         )
 
         elapsed = time.monotonic() - t0
