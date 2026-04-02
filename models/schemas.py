@@ -124,3 +124,51 @@ class PhaseArtifacts(BaseModel):
     dependency_tree: Optional[DependencyTree] = None
     data_flow: Optional[DataFlow] = None
     component_map: Optional[ComponentMap] = None
+    docstrings: Optional["Docstrings"] = None
+
+
+class DocstringEntry(BaseModel):
+    function_id: str
+    file_path: str
+    function_name: str
+    class_name: Optional[str] = None
+    node_type: NodeType
+    docstring: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    provider_used: str
+    fallback_used: bool = False
+    retries: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms: float = 0.0
+
+
+class DocstringFailure(BaseModel):
+    function_id: str
+    file_path: str
+    function_name: str
+    reason: str
+    provider: str
+    error_type: str
+
+
+class ModuleDocstring(BaseModel):
+    file_path: str
+    docstring: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    provider_used: str
+
+
+class Docstrings(BaseModel):
+    entries: list[DocstringEntry] = []
+    module_docstrings: list[ModuleDocstring] = []
+    failures: list[DocstringFailure] = []
+    total_functions: int = 0
+    successful: int = 0
+    failed: int = 0
+    average_confidence: float = 0.0
+    fallback_count: int = 0
+
+
+# Rebuild PhaseArtifacts to resolve forward reference
+PhaseArtifacts.model_rebuild()

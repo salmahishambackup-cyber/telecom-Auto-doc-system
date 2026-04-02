@@ -27,3 +27,13 @@ analysis:
 
 output:
   artifacts_dir: "output/artifacts"
+
+docstrings:
+  provider: "ollama"
+  model: "qwen2.5-coder:7b"
+  base_url: "http://localhost:11434"
+  timeout: 60
+  max_tokens: 2048
+  confidence_threshold: 0.7
+  concurrency: 4
+  fallback_provider: null
