@@ -54,7 +54,7 @@ llm:
     max_tokens: 2048
 
   fallback:
-    enabled: false
+    enabled: true
     provider: "huggingface"   # provider to use as fallback
     confidence_threshold: 0.7
 
@@ -62,7 +62,7 @@ docstring:
   # Legacy config kept for backwards compatibility with phase3_docstrings.py.
   # New code should use the top-level "llm" section above.
   primary_provider: "ollama"
-  fallback_provider: null
+  fallback_provider: "huggingface"
   confidence_threshold: 0.7
   max_retries: 2
   concurrency: 4
