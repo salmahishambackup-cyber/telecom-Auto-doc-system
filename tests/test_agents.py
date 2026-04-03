@@ -291,7 +291,8 @@ class TestArtifactCleaner:
     # clean_data_flow
     # ------------------------------------------------------------------
 
-    def _make_df_entry(self, details: str, flow_type: FlowType = FlowType.DB_READ) -> DataFlowEntry:
+    @staticmethod
+    def _make_df_entry(details: str, flow_type: FlowType = FlowType.DB_READ) -> DataFlowEntry:
         return DataFlowEntry(
             file="a.py",
             function="f",

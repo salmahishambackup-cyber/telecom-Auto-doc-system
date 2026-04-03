@@ -110,10 +110,6 @@ class ArtifactCleaner:
                 # Keep only if there is genuine SQL context in the detail line
                 if not _SQL_KEYWORDS_RE.search(entry.details):
                     continue
-                # Drop lines that are purely Python assignments (contain ``=``
-                # but no SQL keywords at all)
-                if "=" in entry.details and not _SQL_KEYWORDS_RE.search(entry.details):
-                    continue
             cleaned.append(entry)
         return DataFlow(entries=cleaned)
 
