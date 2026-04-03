@@ -132,8 +132,9 @@ def _strip_triple_quotes(text: str) -> str:
 def _confidence_heuristic(text: str) -> float:
     """Score docstring quality based on presence of key sections.
 
-    Checks for a summary line, 'Args:' section, and 'Returns:' section.
-    Penalises responses that contain code instead of prose.
+    Checks for a summary line, 'Args:' section, 'Returns:' section, and
+    'Raises:' section.  Penalises responses that contain code instead of
+    prose or that exhibit LLM looping (repeated sentences).
     Returns a score between 0.0 and 1.0.
     """
     if not text or not text.strip():
@@ -145,6 +146,11 @@ def _confidence_heuristic(text: str) -> float:
     if _looks_like_code(stripped):
         return 0.1
 
+    # Detect LLM looping: many sentences where unique < 50% of total.
+    sentences = [s.strip() for s in stripped.split(". ") if s.strip()]
+    if len(sentences) > 6 and len(set(sentences)) < len(sentences) * 0.5:
+        return 0.1
+
     sections_found = 0
     # Summary line: any non-empty first line
     lines = stripped.splitlines()
@@ -154,4 +160,6 @@ def _confidence_heuristic(text: str) -> float:
         sections_found += 1
     if "Returns:" in stripped or "return " in stripped.lower():
         sections_found += 1
-    return sections_found / 3.0
+    if "Raises:" in stripped:
+        sections_found += 1
+    return sections_found / 4.0

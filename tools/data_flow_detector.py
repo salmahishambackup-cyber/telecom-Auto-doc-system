@@ -24,12 +24,9 @@ DEFAULT_PATTERNS: dict[FlowType, list[str]] = {
     FlowType.DB_READ: [
         "session.query",
         "cursor.execute",
-        r"\bSELECT\b",
+        r"\bSELECT\b\s+\w+.*\bFROM\b",
         r"\.find\(",
         r"\.find_one\(",
-        r"\.filter\(",
-        r"\.filter_by\(",
-        r"\.get\(",
         r"objects\.all\(",
         r"objects\.filter\(",
         r"objects\.get\(",

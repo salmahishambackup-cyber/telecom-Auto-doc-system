@@ -21,12 +21,112 @@ from typing import Any
 
 import yaml
 
+from agents import ArtifactCleaner, ConfidenceImprover, DocstringValidator
 from models.schemas import PhaseArtifacts
 from phases.phase1_discovery import run_phase1
 from phases.phase2_static_analysis import run_phase2
 from phases.phase3_docstrings import run_phase3
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: iterative quality improvement
+# ---------------------------------------------------------------------------
+
+def _run_phase4(config: dict, artifacts: PhaseArtifacts) -> None:  # noqa: C901
+    """Run the quality-improvement pass (Phase 4).
+
+    Cleans noisy artifacts, validates docstring quality, and identifies
+    weak entries for potential regeneration.  A ``validation_report.json``
+    file is written to the artifacts directory.
+
+    Parameters
+    ----------
+    config:
+        Pipeline configuration dict (same shape as ``config.yaml``).
+    artifacts:
+        The :class:`~models.schemas.PhaseArtifacts` instance populated by
+        earlier phases.  Cleaned artifacts are written back in-place.
+    """
+    import json
+
+    arts_dir = Path(
+        config.get("output", {}).get("artifacts_dir", "output/artifacts")
+    )
+    arts_dir.mkdir(parents=True, exist_ok=True)
+
+    cleaner = ArtifactCleaner()
+    validator = DocstringValidator()
+    improver = ConfidenceImprover()
+
+    # ------------------------------------------------------------------
+    # 1. Clean call graph
+    # ------------------------------------------------------------------
+    if artifacts.call_graph is not None:
+        before = len(artifacts.call_graph.entries)
+        artifacts.call_graph = cleaner.clean_call_graph(artifacts.call_graph)
+        after = len(artifacts.call_graph.entries)
+        logger.info("Call graph cleaned: %d → %d entries", before, after)
+
+    # ------------------------------------------------------------------
+    # 2. Clean data flow
+    # ------------------------------------------------------------------
+    if artifacts.data_flow is not None:
+        before = len(artifacts.data_flow.entries)
+        artifacts.data_flow = cleaner.clean_data_flow(artifacts.data_flow)
+        after = len(artifacts.data_flow.entries)
+        logger.info("Data flow cleaned: %d → %d entries", before, after)
+
+    # ------------------------------------------------------------------
+    # 3. Clean, validate, and score docstrings
+    # ------------------------------------------------------------------
+    validation_report: dict = {"issues": [], "passed": 0, "failed": 0, "pass_rate": 1.0}
+    weak_entries: list[dict] = []
+
+    if artifacts.docstrings is not None:
+        # a. Clean markdown fences / LLM filler
+        artifacts.docstrings = cleaner.clean_docstrings(artifacts.docstrings)
+
+        # b. Validate against AST nodes (if available)
+        if artifacts.ast_nodes is not None:
+            report = validator.validate(artifacts.docstrings, artifacts.ast_nodes)
+            validation_report = {
+                "issues": report.issues,
+                "passed": report.passed,
+                "failed": report.failed,
+                "pass_rate": report.pass_rate,
+            }
+            logger.info(
+                "Docstring validation: %d passed, %d failed (pass rate %.1f%%)",
+                report.passed,
+                report.failed,
+                report.pass_rate * 100,
+            )
+
+            # c. Identify weak entries for regeneration
+            weak_entries = improver.find_weak_entries(
+                artifacts.docstrings,
+                validation_issues=report.issues,
+            )
+            logger.info("Weak entries identified for regeneration: %d", len(weak_entries))
+        else:
+            # No AST nodes — still find weak entries by confidence/stub
+            weak_entries = improver.find_weak_entries(artifacts.docstrings)
+            logger.info("Weak entries identified for regeneration: %d", len(weak_entries))
+
+    # ------------------------------------------------------------------
+    # 4. Save validation report
+    # ------------------------------------------------------------------
+    report_path = arts_dir / "validation_report.json"
+    report_payload = {
+        **validation_report,
+        "weak_entries": weak_entries,
+    }
+    report_path.write_text(
+        json.dumps(report_payload, indent=2, default=str), encoding="utf-8"
+    )
+    logger.info("Validation report written to %s", report_path)
 
 
 # ---------------------------------------------------------------------------
@@ -37,12 +137,14 @@ _PHASE_FN = {
     "1": run_phase1,
     "2": run_phase2,
     "3": run_phase3,
+    "4": _run_phase4,
 }
 
 _PHASE_ARTIFACT_KEYS = {
     "1": "file_inventory",
     "2": "ast_nodes",  # proxy: if ast_nodes exists, phase 2 ran
     "3": "docstrings",
+    "4": "docstrings",
 }
 
 
