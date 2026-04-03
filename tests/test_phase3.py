@@ -259,7 +259,7 @@ class TestCleanDocstring:
 
         raw = "```markdown\n```markdown\nThe step_end method logs completion."
         result = _clean_docstring(raw)
-        assert "step_end" in result or "logs completion" in result
+        assert result == "The step_end method logs completion."
         assert "```" not in result
 
     def test_unclosed_fence_strips_marker(self) -> None:

@@ -203,9 +203,6 @@ def _strip_signature_echo(text: str) -> str:
     return textwrap.dedent(remainder).strip()
 
 
-_MIN_CODE_INDICATORS = 1
-
-
 def _looks_like_code(text: str) -> bool:
     """Return True if *text* appears to contain Python code, not just prose."""
     # A single leading def/class is enough to flag as a code wrapper.
