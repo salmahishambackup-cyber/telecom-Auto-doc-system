@@ -18,7 +18,7 @@ from typing import Any
 
 from llm.base import BaseLLMProvider
 from llm.fallback import FallbackRouter
-from llm.utils import _clean_docstring
+from llm.utils import _clean_docstring, _confidence_heuristic
 from models.schemas import (
     ASTNode,
     CallGraph,
@@ -31,6 +31,9 @@ from models.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Confidence threshold below which a docstring generation attempt is retried.
+_LOW_CONFIDENCE_THRESHOLD: float = 0.5
 
 # ---------------------------------------------------------------------------
 # Prompt helpers
@@ -211,14 +214,45 @@ def _generate_for_node(
                 )
                 continue
 
+            cleaned = _clean_docstring(text)
+
+            if not cleaned:
+                retries += 1
+                last_error = "Empty docstring after cleaning"
+                last_error_type = "malformed_response"
+                logger.debug(
+                    "Empty cleaned docstring for %s (attempt %d/%d)",
+                    function_id,
+                    retries,
+                    max_retries + 1,
+                )
+                continue
+
+            # Take the minimum of the router confidence and the heuristic
+            # score so that a structurally poor response is always penalised
+            # even when the router reported high confidence.
+            effective_confidence = min(confidence, _confidence_heuristic(cleaned))
+
+            if effective_confidence < _LOW_CONFIDENCE_THRESHOLD and retries < max_retries:
+                retries += 1
+                last_error = f"Low confidence {effective_confidence:.2f} < {_LOW_CONFIDENCE_THRESHOLD}"
+                last_error_type = "low_confidence"
+                logger.debug(
+                    "Low confidence for %s (attempt %d/%d), retrying",
+                    function_id,
+                    retries,
+                    max_retries + 1,
+                )
+                continue
+
             return DocstringEntry(
                 function_id=function_id,
                 file_path=node.file_path,
                 function_name=func_name,
                 class_name=class_name,
                 node_type=node.node_type,
-                docstring=_clean_docstring(text),
-                confidence=confidence,
+                docstring=cleaned,
+                confidence=effective_confidence,
                 provider_used=provider_used,
                 fallback_used=fallback_used,
                 retries=retries,

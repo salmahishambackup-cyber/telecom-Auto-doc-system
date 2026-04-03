@@ -245,6 +245,267 @@ class TestCleanDocstring:
         assert "self.num_cols" not in result
         assert "def __init__" not in result
 
+    # Issue 4: residual markdown fences
+    def test_backtick_spam_returns_empty(self) -> None:
+        """Issue 4: docstring that is entirely backtick-spam returns empty."""
+        from llm.utils import _clean_docstring
+
+        spam = " ".join(["```"] * 200)
+        assert _clean_docstring(spam) == ""
+
+    def test_double_markdown_fence_prefix(self) -> None:
+        """Issue 4: two consecutive ```markdown opening fences are stripped."""
+        from llm.utils import _clean_docstring
+
+        raw = "```markdown\n```markdown\nThe step_end method logs completion."
+        result = _clean_docstring(raw)
+        assert "step_end" in result or "logs completion" in result
+        assert "```" not in result
+
+    def test_unclosed_fence_strips_marker(self) -> None:
+        """Issue 4: an unclosed ``` fence marker is removed from the output."""
+        from llm.utils import _clean_docstring
+
+        raw = "```python\nDo something useful.\n\nArgs:\n    x: The input."
+        result = _clean_docstring(raw)
+        assert "Do something useful." in result
+        assert "```" not in result
+
+    def test_strip_inline_backtick_fences(self) -> None:
+        """Issue 4: _strip_inline_backtick_fences removes residual markers."""
+        from llm.utils import _strip_inline_backtick_fences
+
+        text = "```markdown\nSome text with ```python fences```"
+        result = _strip_inline_backtick_fences(text)
+        assert "```" not in result
+        assert "Some text with" in result
+
+    # Issue 1: def/class wrapper
+    def test_strips_def_wrapper(self) -> None:
+        """Issue 1: leading 'def func():' wrapper is stripped."""
+        from llm.utils import _clean_docstring
+
+        raw = (
+            'def _calc_categorical_variance(subset, whitelist, cat_cols):\n'
+            '    """\n'
+            '    Calculates the categorical variance.\n'
+            '\n'
+            '    Args:\n'
+            '        subset (pd.DataFrame): The dataframe.\n'
+            '    """\n'
+        )
+        result = _clean_docstring(raw)
+        assert "Calculates the categorical variance." in result
+        assert "def _calc_categorical_variance" not in result
+
+    def test_strips_escaped_triple_quotes(self) -> None:
+        """Issue 2: escaped triple-quotes are unescaped and stripped."""
+        from llm.utils import _clean_docstring
+
+        raw = r'\"\"\"Calculates the categorical variance.\"\"\"'
+        result = _clean_docstring(raw)
+        assert "Calculates the categorical variance." in result
+        assert '"""' not in result
+
+    # Issue 5: signature echo without def
+    def test_strips_signature_echo(self) -> None:
+        """Issue 5: function signature echo without 'def' is stripped."""
+        from llm.utils import _clean_docstring
+
+        raw = (
+            "transform_features(\n"
+            "    pl_df: pd.DataFrame,\n"
+            "    wl_df: pd.DataFrame,\n"
+            ") -> Tuple[csr_matrix, np.ndarray]:\n"
+            '    """\n'
+            "    Transforms the features of the dataframe.\n"
+            "\n"
+            "    Args:\n"
+            "        pl_df: The dataframe.\n"
+            '    """\n'
+        )
+        result = _clean_docstring(raw)
+        assert "Transforms the features" in result
+        assert "transform_features(" not in result
+        assert "pd.DataFrame" not in result
+
+    def test_strip_signature_echo_helper(self) -> None:
+        """Issue 5: _strip_signature_echo helper removes signature prefix."""
+        from llm.utils import _strip_signature_echo
+
+        raw = (
+            "plot_numerical_distributions(\n"
+            "    df: pd.DataFrame,\n"
+            "    cols: List[str],\n"
+            "):\n"
+            "    Plots numerical distributions.\n"
+        )
+        result = _strip_signature_echo(raw)
+        assert "Plots numerical distributions." in result
+        assert "plot_numerical_distributions(" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: new helper functions
+# ---------------------------------------------------------------------------
+
+class TestIsDegenerate:
+    def test_empty_string(self) -> None:
+        from llm.utils import _is_degenerate
+        assert _is_degenerate("") is True
+
+    def test_whitespace_only(self) -> None:
+        from llm.utils import _is_degenerate
+        assert _is_degenerate("   \n  ") is True
+
+    def test_backtick_spam(self) -> None:
+        from llm.utils import _is_degenerate
+        spam = " ".join(["```"] * 100)
+        assert _is_degenerate(spam) is True
+
+    def test_normal_text(self) -> None:
+        from llm.utils import _is_degenerate
+        assert _is_degenerate("Do something useful.") is False
+
+
+class TestStripEscapedQuotes:
+    def test_replaces_escaped_double_quotes(self) -> None:
+        from llm.utils import _strip_escaped_quotes
+        assert _strip_escaped_quotes(r'say \"hello\"') == 'say "hello"'
+
+    def test_replaces_escaped_single_quotes(self) -> None:
+        from llm.utils import _strip_escaped_quotes
+        assert _strip_escaped_quotes(r"it\'s fine") == "it's fine"
+
+
+class TestConfidenceHeuristicNew:
+    def test_degenerate_returns_zero(self) -> None:
+        from llm.utils import _confidence_heuristic
+        spam = " ".join(["```"] * 50)
+        assert _confidence_heuristic(spam) == 0.0
+
+    def test_text_with_fence_markers_penalised(self) -> None:
+        from llm.utils import _confidence_heuristic
+        text = "```markdown\nSomething useful."
+        assert _confidence_heuristic(text) == pytest.approx(0.1)
+
+    def test_signature_echo_penalised(self) -> None:
+        from llm.utils import _confidence_heuristic
+        text = (
+            "transform_features(\n"
+            "    pl_df: pd.DataFrame,\n"
+            ") -> Tuple:\n"
+            "    Transforms features.\n"
+        )
+        assert _confidence_heuristic(text) == pytest.approx(0.1)
+
+
+# ---------------------------------------------------------------------------
+# Tests: confidence-based retry in _generate_for_node
+# ---------------------------------------------------------------------------
+
+class TestLowConfidenceRetry:
+    """Verify that _generate_for_node retries on low-confidence results."""
+
+    def test_low_confidence_triggers_retry(self, tmp_path: Path) -> None:
+        """When confidence < 0.5, the node generator retries up to max_retries."""
+        from phases.phase3_docstrings import _generate_for_node
+        from llm.fallback import FallbackRouter
+
+        # Provider always returns a minimal one-line response (confidence ≈ 0.33)
+        call_count = 0
+
+        class CountingProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                return "Does something."  # low confidence: only summary, no Args/Returns
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                text = self.generate(prompt)
+                from llm.utils import _confidence_heuristic
+                return text, _confidence_heuristic(text)
+
+        provider = CountingProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo():\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        result = _generate_for_node(
+            node=node,
+            source_lines=source_lines,
+            router=router,
+            caller_map={},
+            callee_map={},
+            max_retries=2,
+        )
+        # Should have been called 3 times (initial + 2 retries), then accepted
+        assert call_count == 3
+        # The result is a DocstringEntry (accepted on final attempt regardless)
+        from models.schemas import DocstringEntry
+        assert isinstance(result, DocstringEntry)
+        assert result.retries == 2
+
+    def test_high_confidence_no_retry(self, tmp_path: Path) -> None:
+        """When confidence >= 0.5, no retry is triggered."""
+        from phases.phase3_docstrings import _generate_for_node
+        from llm.fallback import FallbackRouter
+
+        call_count = 0
+
+        class HighConfProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                return _CANNED_DOCSTRING
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                from llm.utils import _confidence_heuristic
+                text = self.generate(prompt)
+                return text, _confidence_heuristic(text)
+
+        provider = HighConfProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo():\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        result = _generate_for_node(
+            node=node,
+            source_lines=source_lines,
+            router=router,
+            caller_map={},
+            callee_map={},
+            max_retries=2,
+        )
+        assert call_count == 1  # no retry needed
+        from models.schemas import DocstringEntry
+        assert isinstance(result, DocstringEntry)
+        assert result.retries == 0
+
 
 # ---------------------------------------------------------------------------
 # Tests: OllamaProvider
