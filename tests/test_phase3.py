@@ -247,6 +247,215 @@ class TestCleanDocstring:
 
 
 # ---------------------------------------------------------------------------
+# Tests: Issue 1 – function-definition wrapping
+# ---------------------------------------------------------------------------
+
+class TestStripWrappingDefinition:
+    """Tests for _strip_wrapping_definition and the enhanced _looks_like_code."""
+
+    def test_single_def_at_start_is_code(self) -> None:
+        from llm.utils import _looks_like_code
+
+        text = 'def foo(x, y):\n    """Does something."""\n    return x'
+        assert _looks_like_code(text) is True
+
+    def test_single_class_at_start_is_code(self) -> None:
+        from llm.utils import _looks_like_code
+
+        text = 'class Foo:\n    """A class."""\n    pass'
+        assert _looks_like_code(text) is True
+
+    def test_plain_prose_is_not_code(self) -> None:
+        from llm.utils import _looks_like_code
+
+        text = "Calculates the variance for specified columns.\n\nArgs:\n    x: input."
+        assert _looks_like_code(text) is False
+
+    def test_strip_wrapping_definition_extracts_body(self) -> None:
+        from llm.utils import _strip_wrapping_definition
+
+        raw = (
+            'def _calc_categorical_variance(subset, whitelist, cat_cols):\n'
+            '    """\n'
+            '    Calculates the categorical variance.\n'
+            '\n'
+            '    Args:\n'
+            '        subset: The dataframe.\n'
+            '    """\n'
+        )
+        result = _strip_wrapping_definition(raw)
+        assert "Calculates the categorical variance." in result
+        assert "def _calc_categorical_variance" not in result
+
+    def test_clean_docstring_removes_def_wrapper(self) -> None:
+        from llm.utils import _clean_docstring
+
+        raw = (
+            'def _calc_categorical_variance(subset, whitelist, cat_cols):\n'
+            '    """\n'
+            '    Calculates the categorical variance for specified columns.\n'
+            '\n'
+            '    Args:\n'
+            '        subset (pd.DataFrame): The dataframe.\n'
+            '    """\n'
+        )
+        result = _clean_docstring(raw)
+        assert "Calculates the categorical variance" in result
+        assert "def _calc_categorical_variance" not in result
+
+    def test_clean_docstring_removes_class_wrapper(self) -> None:
+        from llm.utils import _clean_docstring
+
+        raw = (
+            'class MyEncoder:\n'
+            '    """Encodes categorical columns.\n\n'
+            '    Args:\n'
+            '        cols: Column list.\n'
+            '    """\n'
+        )
+        result = _clean_docstring(raw)
+        assert "Encodes categorical columns." in result
+        assert "class MyEncoder" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Issue 2 – escaped triple quotes
+# ---------------------------------------------------------------------------
+
+class TestStripEscapedQuotes:
+    """Tests for _strip_escaped_quotes and its integration in _clean_docstring."""
+
+    def test_strip_escaped_double_quotes(self) -> None:
+        from llm.utils import _strip_escaped_quotes
+
+        text = '\\"\\"\\"\\nCalculates variance.\\n\\"\\"\\"'
+        result = _strip_escaped_quotes(text)
+        assert '\\"' not in result
+        assert '"' in result
+
+    def test_strip_escaped_single_quotes(self) -> None:
+        from llm.utils import _strip_escaped_quotes
+
+        assert _strip_escaped_quotes("\\'hello\\'") == "'hello'"
+
+    def test_clean_docstring_handles_escaped_triple_quotes(self) -> None:
+        from llm.utils import _clean_docstring
+
+        # LLM output with escaped triple-quotes wrapping a real docstring
+        raw = (
+            '\\\"\\\"\\\"\\n'
+            'Calculates the categorical variance for specified columns.\\n'
+            '\\\"\\\"\\\"'
+        )
+        result = _clean_docstring(raw)
+        assert "Calculates the categorical variance" in result
+        assert '\\"' not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Issue 3 – degenerate / repetitive LLM output
+# ---------------------------------------------------------------------------
+
+class TestIsDegenerate:
+    """Tests for _is_degenerate and its integration."""
+
+    def test_backtick_spam_is_degenerate(self) -> None:
+        from llm.utils import _is_degenerate
+
+        spam = "``` ``` ``` ``` ``` ``` ``` ``` ``` ``` ``` ``` ``` ``` ```"
+        assert _is_degenerate(spam) is True
+
+    def test_pure_whitespace_is_not_degenerate(self) -> None:
+        """Empty/whitespace strings are handled by the not-text guard, not _is_degenerate."""
+        from llm.utils import _is_degenerate
+
+        assert _is_degenerate("") is False
+        assert _is_degenerate("   ") is False
+
+    def test_single_token_repetition_is_degenerate(self) -> None:
+        from llm.utils import _is_degenerate
+
+        spam = "the the the the the the the the the the the the"
+        assert _is_degenerate(spam) is True
+
+    def test_dominant_token_above_threshold_is_degenerate(self) -> None:
+        from llm.utils import _is_degenerate
+
+        # 18 "foo" + 2 other tokens → 90% dominant
+        spam = " ".join(["foo"] * 18 + ["bar", "baz"])
+        assert _is_degenerate(spam) is True
+
+    def test_mixed_valid_text_is_not_degenerate(self) -> None:
+        from llm.utils import _is_degenerate
+
+        text = "Calculates variance.\n\nArgs:\n    x: int\n\nReturns:\n    float"
+        assert _is_degenerate(text) is False
+
+    def test_clean_docstring_returns_empty_for_backtick_spam(self) -> None:
+        from llm.utils import _clean_docstring
+
+        spam = " ".join(["```"] * 50)
+        assert _clean_docstring(spam) == ""
+
+    def test_confidence_heuristic_returns_zero_for_degenerate(self) -> None:
+        from llm.utils import _confidence_heuristic
+
+        spam = "``` ``` ``` ``` ``` ``` ``` ``` ``` ``` ``` ``` ``` ``` ```"
+        assert _confidence_heuristic(spam) == 0.0
+
+    def test_generate_for_node_retries_on_degenerate_output(
+        self, tmp_path: Path
+    ) -> None:
+        """_generate_for_node must retry (not store) degenerate LLM output."""
+        from phases.phase3_docstrings import _generate_for_node
+        from models.schemas import DocstringFailure, NodeType, ASTNode
+
+        backtick_spam = " ".join(["```"] * 60)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo(x):\n    return x\n", encoding="utf-8")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            args=["x"],
+            line_start=1,
+            line_end=2,
+        )
+
+        call_count = 0
+
+        class SpamProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                return backtick_spam
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                nonlocal call_count
+                call_count += 1
+                return backtick_spam, 0.25
+
+        provider = SpamProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        result = _generate_for_node(
+            node,
+            py_file.read_text(encoding="utf-8").splitlines(keepends=True),
+            router,
+            {},
+            {},
+            max_retries=2,
+        )
+        # Should exhaust retries and return a failure, not a DocstringEntry
+        assert isinstance(result, DocstringFailure)
+        assert result.error_type == "malformed_response"
+        # Provider should have been called 3 times (initial + 2 retries)
+        assert call_count == 3
+
+
+# ---------------------------------------------------------------------------
 # Tests: OllamaProvider
 # ---------------------------------------------------------------------------
 

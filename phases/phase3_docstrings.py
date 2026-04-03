@@ -211,13 +211,26 @@ def _generate_for_node(
                 )
                 continue
 
+            cleaned = _clean_docstring(text)
+            if not cleaned:
+                retries += 1
+                last_error = "LLM output was degenerate or empty after cleaning"
+                last_error_type = "malformed_response"
+                logger.debug(
+                    "Degenerate docstring for %s (attempt %d/%d)",
+                    function_id,
+                    retries,
+                    max_retries + 1,
+                )
+                continue
+
             return DocstringEntry(
                 function_id=function_id,
                 file_path=node.file_path,
                 function_name=func_name,
                 class_name=class_name,
                 node_type=node.node_type,
-                docstring=_clean_docstring(text),
+                docstring=cleaned,
                 confidence=confidence,
                 provider_used=provider_used,
                 fallback_used=fallback_used,
