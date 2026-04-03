@@ -344,6 +344,33 @@ class TestCleanDocstring:
         assert "Plots numerical distributions." in result
         assert "plot_numerical_distributions(" not in result
 
+    # Single-line signature echo (the exact bug from the issue report)
+    def test_single_line_signature_echo_returns_empty(self) -> None:
+        """A single-line function signature echo is cleaned to empty string."""
+        from llm.utils import _clean_docstring
+
+        raw = "evaluate(subset, whitelist, num_cols, cat_cols, logger: PipelineLogger)"
+        assert _clean_docstring(raw) == ""
+
+    def test_single_line_signature_with_return_type(self) -> None:
+        """Single-line signature with return-type annotation is cleaned."""
+        from llm.utils import _clean_docstring
+
+        assert _clean_docstring("foo(x: int, y: str) -> bool") == ""
+        assert _clean_docstring("transform_features(df) -> Tuple[csr_matrix, np.ndarray]") == ""
+
+    def test_single_line_signature_not_confused_with_prose(self) -> None:
+        """Legitimate prose that contains parentheses must survive cleaning."""
+        from llm.utils import _clean_docstring
+
+        # These should NOT be treated as signature echoes
+        prose1 = "Processes data (with optional filtering)."
+        assert _clean_docstring(prose1) == prose1
+        prose2 = "Calls evaluate(x) and returns result."
+        assert _clean_docstring(prose2) == prose2
+        text = "Do something useful.\n\nArgs:\n    x: The input."
+        assert _clean_docstring(text) == text
+
 
 # ---------------------------------------------------------------------------
 # Tests: new helper functions
@@ -398,6 +425,11 @@ class TestConfidenceHeuristicNew:
             "    Transforms features.\n"
         )
         assert _confidence_heuristic(text) == pytest.approx(0.1)
+
+    def test_single_line_signature_echo_returns_zero(self) -> None:
+        from llm.utils import _confidence_heuristic
+        text = "evaluate(subset, whitelist, num_cols, cat_cols, logger: PipelineLogger)"
+        assert _confidence_heuristic(text) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +537,56 @@ class TestLowConfidenceRetry:
         from models.schemas import DocstringEntry
         assert isinstance(result, DocstringEntry)
         assert result.retries == 0
+
+    def test_signature_echo_triggers_failure(self, tmp_path: Path) -> None:
+        """A single-line signature echo is cleaned to empty, producing a failure."""
+        from phases.phase3_docstrings import _generate_for_node
+        from llm.fallback import FallbackRouter
+        from models.schemas import DocstringFailure
+
+        call_count = 0
+
+        class SigEchoProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                # Mimic the bug: LLM echoes the function signature
+                return "evaluate(subset, whitelist, num_cols, cat_cols, logger: PipelineLogger)"
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                text = self.generate(prompt)
+                from llm.utils import _confidence_heuristic
+                return text, _confidence_heuristic(text)
+
+        provider = SigEchoProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def evaluate(subset):\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="evaluate",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        result = _generate_for_node(
+            node=node,
+            source_lines=source_lines,
+            router=router,
+            caller_map={},
+            callee_map={},
+            max_retries=2,
+        )
+        # Cleaned to empty on every attempt → retries exhausted → DocstringFailure
+        assert call_count == 3  # initial + 2 retries
+        assert isinstance(result, DocstringFailure)
+        assert result.error_type == "malformed_response"
 
 
 # ---------------------------------------------------------------------------

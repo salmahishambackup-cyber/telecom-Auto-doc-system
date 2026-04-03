@@ -167,7 +167,8 @@ def _strip_wrapping_definition(text: str) -> str:
     return textwrap.dedent(remainder).strip()
 
 
-# Detect a function signature echo: ``name(\n  params\n) -> ReturnType:\n``
+# Detect a multi-line function signature echo:
+#   ``name(\n  params\n) -> ReturnType:\n``
 _SIGNATURE_ECHO_RE = re.compile(
     r"^\s*\w+\s*\(\s*\n"   # "func_name(\n"
     r"(?:.*\n)*?"            # parameter lines (non-greedy)
@@ -175,12 +176,27 @@ _SIGNATURE_ECHO_RE = re.compile(
     re.MULTILINE,
 )
 
+# Detect a single-line function signature echo where the *entire* text is
+# just ``name(params)`` or ``name(params) -> ReturnType`` with nothing else.
+# Examples that should match:
+#   evaluate(subset, whitelist, num_cols, cat_cols, logger: PipelineLogger)
+#   foo(x: int, y: str) -> bool
+# Examples that should NOT match:
+#   Processes data (with optional filtering).
+#   Calls evaluate(x) and returns result.
+_SINGLE_LINE_SIGNATURE_RE = re.compile(
+    r"^\s*\w+\s*\("           # identifier + opening paren
+    r"[^)]*"                   # param text (anything except closing paren)
+    r"\)"                      # closing paren
+    r"(?:\s*->[\s\S]*?)?"      # optional return type annotation
+    r"\s*:?\s*$",              # optional trailing colon + whitespace
+)
+
 
 def _strip_signature_echo(text: str) -> str:
     """Remove a function-signature echo that precedes the actual docstring.
 
-    Handles the failure mode where the LLM echoed the full function
-    signature (without the ``def`` keyword) before the docstring, e.g.::
+    Handles **multi-line** echoes::
 
         transform_features(
             pl_df: pd.DataFrame,
@@ -189,18 +205,28 @@ def _strip_signature_echo(text: str) -> str:
             \"\"\"
             Transforms the features...
 
-    When detected, the actual docstring content is returned.  If no
-    triple-quoted block is found after the signature, everything up to
-    and including the closing ``)...:\\n`` line is stripped.
+    and **single-line** echoes that constitute the entire response::
+
+        evaluate(subset, whitelist, num_cols, cat_cols, logger: PipelineLogger)
+
+    Multi-line: the actual docstring content is extracted from the remainder.
+    Single-line: returns empty string (the entire text is the echo).
     """
+    # Multi-line signature echo (with docstring body afterwards)
     m = _SIGNATURE_ECHO_RE.match(text)
-    if not m:
-        return text
-    remainder = text[m.end():]
-    extracted = _extract_first_docstring(remainder)
-    if extracted:
-        return extracted
-    return textwrap.dedent(remainder).strip()
+    if m:
+        remainder = text[m.end():]
+        extracted = _extract_first_docstring(remainder)
+        if extracted:
+            return extracted
+        return textwrap.dedent(remainder).strip()
+
+    # Single-line signature echo (the entire text is just the signature)
+    stripped = text.strip()
+    if _SINGLE_LINE_SIGNATURE_RE.match(stripped):
+        return ""
+
+    return text
 
 
 def _looks_like_code(text: str) -> bool:
@@ -209,8 +235,12 @@ def _looks_like_code(text: str) -> bool:
     if re.match(r"^\s*(?:async\s+)?(?:def|class)\s+\w+", text):
         return True
 
-    # Signature echo without 'def': identifier( at start, with typed params
+    # Multi-line signature echo without 'def': identifier( at start, with typed params
     if _SIGNATURE_ECHO_RE.match(text):
+        return True
+
+    # Single-line signature echo (entire text is just ``name(params)``)
+    if _SINGLE_LINE_SIGNATURE_RE.match(text.strip()):
         return True
 
     code_indicators = [
@@ -298,9 +328,13 @@ def _confidence_heuristic(text: str) -> float:
     if _INLINE_FENCE_RE.search(stripped):
         return 0.1
 
-    # Penalise responses that start with a signature echo.
+    # Penalise responses that start with a multi-line signature echo.
     if _SIGNATURE_ECHO_RE.match(stripped):
         return 0.1
+
+    # Penalise responses that are a single-line signature echo.
+    if _SINGLE_LINE_SIGNATURE_RE.match(stripped):
+        return 0.0
 
     # Penalise responses that look like code rather than a docstring.
     if _looks_like_code(stripped):
