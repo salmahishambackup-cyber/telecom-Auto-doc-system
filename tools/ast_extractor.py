@@ -112,6 +112,7 @@ class _NodeCollector(ast.NodeVisitor):
                 file_path=self.file_path,
                 node_type=node_type,
                 name=node.name,
+                class_name=self._class_stack[-1] if self._class_stack else None,
                 args=_build_arg_list(node.args),
                 return_type=_get_return_annotation(node),
                 decorators=decorators,

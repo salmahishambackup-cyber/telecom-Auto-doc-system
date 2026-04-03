@@ -127,7 +127,11 @@ class TestConfidenceHeuristic:
     def test_all_sections_present_gives_high_score(self) -> None:
         from llm.ollama_provider import _confidence_heuristic
 
-        text = "Do something.\n\nArgs:\n    x: input.\n\nReturns:\n    result."
+        # Include all four sections: summary, Args, Returns, Raises
+        text = (
+            "Do something.\n\nArgs:\n    x: input.\n\n"
+            "Returns:\n    result.\n\nRaises:\n    ValueError: if bad."
+        )
         score = _confidence_heuristic(text)
         assert score == pytest.approx(1.0)
 
@@ -135,7 +139,7 @@ class TestConfidenceHeuristic:
         from llm.ollama_provider import _confidence_heuristic
 
         score = _confidence_heuristic("Just a summary line.")
-        assert score == pytest.approx(1 / 3)
+        assert score == pytest.approx(1 / 4)
 
     def test_empty_string_gives_zero(self) -> None:
         from llm.ollama_provider import _confidence_heuristic
@@ -148,7 +152,7 @@ class TestConfidenceHeuristic:
 
         text = "Summary line.\n\nReturns:\n    A value."
         score = _confidence_heuristic(text)
-        assert score == pytest.approx(2 / 3)
+        assert score == pytest.approx(2 / 4)
 
     def test_code_like_response_penalised(self) -> None:
         from llm.utils import _confidence_heuristic
@@ -308,7 +312,7 @@ class TestOllamaProvider:
             text, confidence = provider.generate_with_confidence("prompt")
 
         assert text == _CANNED_DOCSTRING
-        assert confidence == pytest.approx(1.0)
+        assert confidence == pytest.approx(0.75)
 
     def test_generate_structured_parses_json(self) -> None:
         mock_resp = MagicMock()

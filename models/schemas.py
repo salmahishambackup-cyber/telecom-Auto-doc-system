@@ -43,6 +43,7 @@ class ASTNode(BaseModel):
     file_path: str
     node_type: NodeType
     name: str
+    class_name: Optional[str] = None
     args: list[str] = []
     return_type: Optional[str] = None
     decorators: list[str] = []
