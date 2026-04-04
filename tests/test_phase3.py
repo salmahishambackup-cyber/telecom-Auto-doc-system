@@ -741,6 +741,101 @@ class TestFallbackRouter:
         with pytest.raises(Exception):
             router.generate_with_fallback("p")
 
+    # --- Circuit-breaker tests ---
+
+    def test_connection_error_disables_fallback_immediately(self) -> None:
+        """A ConnectionError from the fallback should trip the circuit breaker."""
+        primary = FakeLLMProvider(_LOW_CONFIDENCE_DOCSTRING)
+        fallback = RaisingLLMProvider(ConnectionError("refused"))
+        router = FallbackRouter(primary, fallback, confidence_threshold=0.9)
+
+        # First call: fallback tried, fails with ConnectionError → disabled
+        text, _, _, fallback_used = router.generate_with_fallback("p")
+        assert not fallback_used  # fell back to primary result
+        assert router.fallback_disabled
+
+        # Second call: fallback NOT tried (circuit open), returns primary
+        text2, _, _, fallback_used2 = router.generate_with_fallback("p2")
+        assert not fallback_used2
+        assert text2 == _LOW_CONFIDENCE_DOCSTRING
+
+    def test_consecutive_failures_disable_fallback(self) -> None:
+        """Non-connection errors disable fallback after threshold consecutive failures."""
+        primary = FakeLLMProvider(_LOW_CONFIDENCE_DOCSTRING)
+        fallback = RaisingLLMProvider(RuntimeError("model error"))
+        threshold = 3
+        router = FallbackRouter(
+            primary, fallback,
+            confidence_threshold=0.9,
+            circuit_breaker_threshold=threshold,
+        )
+
+        # Failures 1 and 2: fallback still enabled
+        for i in range(threshold - 1):
+            router.generate_with_fallback(f"p{i}")
+            assert not router.fallback_disabled, f"Should not be disabled after {i + 1} failures"
+
+        # Failure 3: reaches threshold → circuit opens
+        router.generate_with_fallback("final")
+        assert router.fallback_disabled
+
+    def test_successful_fallback_resets_failure_counter(self) -> None:
+        """A successful fallback call should reset the failure counter."""
+        call_count = 0
+
+        class AlternatingProvider(BaseLLMProvider):
+            """Fails on first N calls, then succeeds."""
+            def __init__(self, fail_count: int) -> None:
+                self._fail_count = fail_count
+                self.calls: list[str] = []
+
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                self.calls.append(prompt)
+                if call_count <= self._fail_count:
+                    raise RuntimeError("temporary")
+                return _CANNED_DOCSTRING
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                text = self.generate(prompt, **kwargs)
+                from llm.utils import _confidence_heuristic
+                return text, _confidence_heuristic(text)
+
+        primary = FakeLLMProvider(_LOW_CONFIDENCE_DOCSTRING)
+        # Fails twice, then succeeds
+        fallback = AlternatingProvider(fail_count=2)
+        router = FallbackRouter(
+            primary, fallback,
+            confidence_threshold=0.9,
+            circuit_breaker_threshold=3,
+        )
+
+        # Two failures
+        router.generate_with_fallback("a")
+        router.generate_with_fallback("b")
+        assert not router.fallback_disabled
+        assert router._consecutive_fallback_failures == 2
+
+        # Third call succeeds → counter resets
+        call_count = 2  # already failed twice
+        _, _, _, fallback_used = router.generate_with_fallback("c")
+        assert fallback_used
+        assert router._consecutive_fallback_failures == 0
+        assert not router.fallback_disabled
+
+    def test_oserror_subclass_disables_fallback(self) -> None:
+        """OSError subclasses (requests.exceptions.ConnectionError) trip the breaker."""
+        primary = FakeLLMProvider(_LOW_CONFIDENCE_DOCSTRING)
+        fallback = RaisingLLMProvider(OSError("network unreachable"))
+        router = FallbackRouter(primary, fallback, confidence_threshold=0.9)
+
+        router.generate_with_fallback("p")
+        assert router.fallback_disabled
+
 
 # ---------------------------------------------------------------------------
 # Tests: Phase 3 integration
