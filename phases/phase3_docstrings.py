@@ -272,6 +272,16 @@ def _generate_for_node(
             last_error = str(exc)
             last_error_type = "timeout"
             logger.warning("Timeout for %s (attempt %d): %s", function_id, retries, exc)
+        except (ConnectionError, RuntimeError) as exc:
+            # Provider unavailable — retrying won't help.
+            last_error = str(exc)
+            last_error_type = "provider_unavailable"
+            logger.warning(
+                "Provider unavailable for %s, skipping retries: %s",
+                function_id,
+                exc,
+            )
+            break
         except Exception as exc:
             retries += 1
             last_error = str(exc)
@@ -337,20 +347,41 @@ async def _process_node_async(
     max_retries: int,
     semaphore: asyncio.Semaphore,
     executor: ThreadPoolExecutor,
+    node_timeout: int = 120,
 ) -> DocstringEntry | DocstringFailure:
     """Generate a docstring for a single node, respecting the semaphore."""
     async with semaphore:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            executor,
-            _generate_for_node,
-            node,
-            source_lines,
-            router,
-            caller_map,
-            callee_map,
-            max_retries,
-        )
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(
+                    executor,
+                    _generate_for_node,
+                    node,
+                    source_lines,
+                    router,
+                    caller_map,
+                    callee_map,
+                    max_retries,
+                ),
+                timeout=node_timeout,
+            )
+        except asyncio.TimeoutError:
+            function_id = _make_function_id(node)
+            func_name = node.name
+            if node.node_type == NodeType.METHOD and "." in node.name:
+                _, func_name = node.name.rsplit(".", 1)
+            logger.warning(
+                "Node %s timed out after %ds", function_id, node_timeout,
+            )
+            return DocstringFailure(
+                function_id=function_id,
+                file_path=node.file_path,
+                function_name=func_name,
+                reason=f"Node processing timed out after {node_timeout}s",
+                provider=type(router.primary).__name__,
+                error_type="timeout",
+            )
 
 
 async def _process_module_async(
@@ -359,13 +390,25 @@ async def _process_module_async(
     router: FallbackRouter,
     semaphore: asyncio.Semaphore,
     executor: ThreadPoolExecutor,
+    node_timeout: int = 120,
 ) -> ModuleDocstring | None:
     """Generate a module-level docstring, respecting the semaphore."""
     async with semaphore:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            executor, _generate_module_docstring, file_path, source, router,
-        )
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(
+                    executor, _generate_module_docstring, file_path, source, router,
+                ),
+                timeout=node_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Module docstring for %s timed out after %ds",
+                file_path,
+                node_timeout,
+            )
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +460,7 @@ def run_phase3(*, config: dict[str, Any], artifacts: PhaseArtifacts) -> None:
 
     max_retries: int = int(ds_cfg.get("max_retries", 2))
     concurrency: int = int(ds_cfg.get("concurrency", 4))
+    node_timeout: int = int(ds_cfg.get("node_timeout", 120))
 
     # Build providers
     primary = _build_provider(primary_name, ds_cfg)
@@ -494,6 +538,7 @@ def run_phase3(*, config: dict[str, Any], artifacts: PhaseArtifacts) -> None:
                             max_retries,
                             semaphore,
                             executor,
+                            node_timeout,
                         )
                     )
                 )
@@ -502,6 +547,7 @@ def run_phase3(*, config: dict[str, Any], artifacts: PhaseArtifacts) -> None:
                 asyncio.create_task(
                     _process_module_async(
                         file_path, source, router, semaphore, executor,
+                        node_timeout,
                     )
                 )
             )

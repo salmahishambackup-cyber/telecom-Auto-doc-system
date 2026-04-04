@@ -22,11 +22,12 @@ class FallbackRouter:
 
     If the primary raises an exception, the fallback is tried automatically.
 
-    A built-in **circuit breaker** protects against slow / unreachable
-    fallback providers.  After *circuit_breaker_threshold* consecutive
-    failures (or immediately on a connection error) the fallback is
-    disabled for the rest of the session so that subsequent requests are
-    not delayed by doomed connection attempts.
+    Built-in **circuit breakers** protect against slow / unreachable
+    providers.  The *primary* provider is disabled immediately on a
+    connection error so that subsequent requests skip the doomed attempt
+    and go straight to the fallback.  The *fallback* provider is disabled
+    after *circuit_breaker_threshold* consecutive failures (or immediately
+    on a connection error).
 
     Parameters
     ----------
@@ -55,10 +56,13 @@ class FallbackRouter:
         self.fallback = fallback
         self.confidence_threshold = confidence_threshold
 
-        # Circuit-breaker state
+        # Circuit-breaker state — fallback
         self._circuit_breaker_threshold = circuit_breaker_threshold
         self._consecutive_fallback_failures: int = 0
         self._fallback_disabled: bool = False
+
+        # Circuit-breaker state — primary
+        self._primary_disabled: bool = False
 
     def _provider_name(self, provider: BaseLLMProvider) -> str:
         return type(provider).__name__
@@ -67,6 +71,20 @@ class FallbackRouter:
     def fallback_disabled(self) -> bool:
         """Whether the circuit breaker has disabled the fallback provider."""
         return self._fallback_disabled
+
+    @property
+    def primary_disabled(self) -> bool:
+        """Whether the circuit breaker has disabled the primary provider."""
+        return self._primary_disabled
+
+    def _open_primary_circuit(self, reason: str) -> None:
+        """Disable the primary provider for this session."""
+        if not self._primary_disabled:
+            self._primary_disabled = True
+            logger.warning(
+                "Circuit breaker OPEN — primary provider disabled: %s",
+                reason,
+            )
 
     def _open_circuit(self, reason: str) -> None:
         """Permanently disable the fallback for this session."""
@@ -106,19 +124,30 @@ class FallbackRouter:
         primary_confidence: float = 0.0
         primary_failed = False
 
-        # --- Try primary ---
-        try:
-            primary_text, primary_confidence = self.primary.generate_with_confidence(
-                prompt, **kwargs
-            )
-        except Exception as exc:
+        # --- Try primary (skip if circuit breaker is open) ---
+        if self._primary_disabled:
             primary_failed = True
-            logger.warning(
-                "Primary provider %s raised %s: %s — trying fallback.",
+            logger.debug(
+                "Primary provider %s skipped (circuit breaker open).",
                 primary_name,
-                type(exc).__name__,
-                exc,
             )
+        else:
+            try:
+                primary_text, primary_confidence = self.primary.generate_with_confidence(
+                    prompt, **kwargs
+                )
+            except Exception as exc:
+                primary_failed = True
+                if self._is_connection_error(exc):
+                    self._open_primary_circuit(
+                        f"{primary_name} unreachable ({type(exc).__name__})"
+                    )
+                logger.warning(
+                    "Primary provider %s raised %s: %s — trying fallback.",
+                    primary_name,
+                    type(exc).__name__,
+                    exc,
+                )
 
         # Sufficient confidence from primary → return immediately
         if not primary_failed and primary_confidence >= self.confidence_threshold:

@@ -588,6 +588,148 @@ class TestLowConfidenceRetry:
         assert isinstance(result, DocstringFailure)
         assert result.error_type == "malformed_response"
 
+    def test_connection_error_skips_retries(self, tmp_path: Path) -> None:
+        """ConnectionError from both providers should break the retry loop immediately."""
+        from phases.phase3_docstrings import _generate_for_node
+        from llm.fallback import FallbackRouter
+        from models.schemas import DocstringFailure
+
+        call_count = 0
+
+        class ConnErrProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                raise ConnectionError("server down")
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                raise ConnectionError("server down")
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                return self.generate(prompt, **kwargs), 0.0
+
+        provider = ConnErrProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo():\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        result = _generate_for_node(
+            node=node,
+            source_lines=source_lines,
+            router=router,
+            caller_map={},
+            callee_map={},
+            max_retries=2,
+        )
+        # Should NOT retry — breaks immediately on provider unavailability
+        assert call_count == 1
+        assert isinstance(result, DocstringFailure)
+        assert result.error_type == "provider_unavailable"
+
+    def test_runtime_error_skips_retries(self, tmp_path: Path) -> None:
+        """RuntimeError (both providers failed) should break retry loop immediately."""
+        from phases.phase3_docstrings import _generate_for_node
+        from llm.fallback import FallbackRouter
+        from models.schemas import DocstringFailure
+
+        primary = RaisingLLMProvider(ConnectionError("primary down"))
+        fallback = RaisingLLMProvider(ConnectionError("fallback down"))
+        router = FallbackRouter(primary=primary, fallback=fallback, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo():\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        result = _generate_for_node(
+            node=node,
+            source_lines=source_lines,
+            router=router,
+            caller_map={},
+            callee_map={},
+            max_retries=2,
+        )
+        # RuntimeError re-raised from fallback (ConnectionError) → breaks immediately
+        assert isinstance(result, DocstringFailure)
+        assert result.error_type == "provider_unavailable"
+
+
+class TestNodeAsyncTimeout:
+    """Verify that per-node async timeout produces a DocstringFailure."""
+
+    def test_slow_node_times_out(self, tmp_path: Path) -> None:
+        """A node that exceeds the timeout should be recorded as a failure."""
+        import asyncio
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        from phases.phase3_docstrings import _process_node_async
+        from models.schemas import DocstringFailure
+
+        class SlowProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                time.sleep(5)  # deliberately slow
+                return _CANNED_DOCSTRING
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                text = self.generate(prompt, **kwargs)
+                return text, 0.9
+
+        provider = SlowProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo():\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        async def _run() -> DocstringFailure:
+            sem = asyncio.Semaphore(1)
+            executor = ThreadPoolExecutor(max_workers=1)
+            try:
+                return await _process_node_async(
+                    node,
+                    source_lines,
+                    router,
+                    {},
+                    {},
+                    0,  # max_retries
+                    sem,
+                    executor,
+                    node_timeout=1,  # 1 second — should timeout
+                )
+            finally:
+                executor.shutdown(wait=False)
+
+        result = asyncio.run(_run())
+        assert isinstance(result, DocstringFailure)
+        assert result.error_type == "timeout"
+        assert "timed out" in result.reason
+
 
 # ---------------------------------------------------------------------------
 # Tests: OllamaProvider
@@ -869,6 +1011,66 @@ class TestFallbackRouter:
 
         router.generate_with_fallback("p")
         assert router.fallback_disabled
+
+    # --- Primary circuit-breaker tests ---
+
+    def test_connection_error_disables_primary_immediately(self) -> None:
+        """A ConnectionError from the primary should trip its circuit breaker."""
+        primary = RaisingLLMProvider(ConnectionError("refused"))
+        fallback = FakeLLMProvider(_CANNED_DOCSTRING)
+        router = FallbackRouter(primary, fallback, confidence_threshold=0.7)
+
+        # First call: primary fails with ConnectionError → disabled, fallback used
+        text, _, _, fallback_used = router.generate_with_fallback("p")
+        assert fallback_used
+        assert router.primary_disabled
+        assert text == _CANNED_DOCSTRING
+
+        # Second call: primary skipped entirely, fallback used directly
+        text2, _, _, fallback_used2 = router.generate_with_fallback("p2")
+        assert fallback_used2
+        assert text2 == _CANNED_DOCSTRING
+
+    def test_primary_circuit_breaker_skips_primary_calls(self) -> None:
+        """Once primary is disabled, its generate method must not be called."""
+        call_count = 0
+
+        class CountingRaiser(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                raise ConnectionError("down")
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                raise ConnectionError("down")
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                nonlocal call_count
+                call_count += 1
+                raise ConnectionError("down")
+
+        primary = CountingRaiser()
+        fallback = FakeLLMProvider(_CANNED_DOCSTRING)
+        router = FallbackRouter(primary, fallback, confidence_threshold=0.7)
+
+        # First call triggers primary failure → circuit opens
+        router.generate_with_fallback("p1")
+        assert call_count == 1
+        assert router.primary_disabled
+
+        # Subsequent calls must NOT invoke the primary
+        router.generate_with_fallback("p2")
+        router.generate_with_fallback("p3")
+        assert call_count == 1  # still only the first call
+
+    def test_non_connection_primary_error_does_not_disable(self) -> None:
+        """Non-connection errors from primary should not trip the circuit breaker."""
+        primary = RaisingLLMProvider(ValueError("bad input"))
+        fallback = FakeLLMProvider(_CANNED_DOCSTRING)
+        router = FallbackRouter(primary, fallback, confidence_threshold=0.7)
+
+        router.generate_with_fallback("p")
+        assert not router.primary_disabled  # ValueError is not a connection error
 
 
 # ---------------------------------------------------------------------------
