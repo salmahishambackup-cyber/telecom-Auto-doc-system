@@ -245,6 +245,491 @@ class TestCleanDocstring:
         assert "self.num_cols" not in result
         assert "def __init__" not in result
 
+    # Issue 4: residual markdown fences
+    def test_backtick_spam_returns_empty(self) -> None:
+        """Issue 4: docstring that is entirely backtick-spam returns empty."""
+        from llm.utils import _clean_docstring
+
+        spam = " ".join(["```"] * 200)
+        assert _clean_docstring(spam) == ""
+
+    def test_double_markdown_fence_prefix(self) -> None:
+        """Issue 4: two consecutive ```markdown opening fences are stripped."""
+        from llm.utils import _clean_docstring
+
+        raw = "```markdown\n```markdown\nThe step_end method logs completion."
+        result = _clean_docstring(raw)
+        assert result == "The step_end method logs completion."
+        assert "```" not in result
+
+    def test_unclosed_fence_strips_marker(self) -> None:
+        """Issue 4: an unclosed ``` fence marker is removed from the output."""
+        from llm.utils import _clean_docstring
+
+        raw = "```python\nDo something useful.\n\nArgs:\n    x: The input."
+        result = _clean_docstring(raw)
+        assert "Do something useful." in result
+        assert "```" not in result
+
+    def test_strip_inline_backtick_fences(self) -> None:
+        """Issue 4: _strip_inline_backtick_fences removes residual markers."""
+        from llm.utils import _strip_inline_backtick_fences
+
+        text = "```markdown\nSome text with ```python fences```"
+        result = _strip_inline_backtick_fences(text)
+        assert "```" not in result
+        assert "Some text with" in result
+
+    # Issue 1: def/class wrapper
+    def test_strips_def_wrapper(self) -> None:
+        """Issue 1: leading 'def func():' wrapper is stripped."""
+        from llm.utils import _clean_docstring
+
+        raw = (
+            'def _calc_categorical_variance(subset, whitelist, cat_cols):\n'
+            '    """\n'
+            '    Calculates the categorical variance.\n'
+            '\n'
+            '    Args:\n'
+            '        subset (pd.DataFrame): The dataframe.\n'
+            '    """\n'
+        )
+        result = _clean_docstring(raw)
+        assert "Calculates the categorical variance." in result
+        assert "def _calc_categorical_variance" not in result
+
+    def test_strips_escaped_triple_quotes(self) -> None:
+        """Issue 2: escaped triple-quotes are unescaped and stripped."""
+        from llm.utils import _clean_docstring
+
+        raw = r'\"\"\"Calculates the categorical variance.\"\"\"'
+        result = _clean_docstring(raw)
+        assert "Calculates the categorical variance." in result
+        assert '"""' not in result
+
+    # Issue 5: signature echo without def
+    def test_strips_signature_echo(self) -> None:
+        """Issue 5: function signature echo without 'def' is stripped."""
+        from llm.utils import _clean_docstring
+
+        raw = (
+            "transform_features(\n"
+            "    pl_df: pd.DataFrame,\n"
+            "    wl_df: pd.DataFrame,\n"
+            ") -> Tuple[csr_matrix, np.ndarray]:\n"
+            '    """\n'
+            "    Transforms the features of the dataframe.\n"
+            "\n"
+            "    Args:\n"
+            "        pl_df: The dataframe.\n"
+            '    """\n'
+        )
+        result = _clean_docstring(raw)
+        assert "Transforms the features" in result
+        assert "transform_features(" not in result
+        assert "pd.DataFrame" not in result
+
+    def test_strip_signature_echo_helper(self) -> None:
+        """Issue 5: _strip_signature_echo helper removes signature prefix."""
+        from llm.utils import _strip_signature_echo
+
+        raw = (
+            "plot_numerical_distributions(\n"
+            "    df: pd.DataFrame,\n"
+            "    cols: List[str],\n"
+            "):\n"
+            "    Plots numerical distributions.\n"
+        )
+        result = _strip_signature_echo(raw)
+        assert "Plots numerical distributions." in result
+        assert "plot_numerical_distributions(" not in result
+
+    # Single-line signature echo (the exact bug from the issue report)
+    def test_single_line_signature_echo_returns_empty(self) -> None:
+        """A single-line function signature echo is cleaned to empty string."""
+        from llm.utils import _clean_docstring
+
+        raw = "evaluate(subset, whitelist, num_cols, cat_cols, logger: PipelineLogger)"
+        assert _clean_docstring(raw) == ""
+
+    def test_single_line_signature_with_return_type(self) -> None:
+        """Single-line signature with return-type annotation is cleaned."""
+        from llm.utils import _clean_docstring
+
+        assert _clean_docstring("foo(x: int, y: str) -> bool") == ""
+        assert _clean_docstring("transform_features(df) -> Tuple[csr_matrix, np.ndarray]") == ""
+
+    def test_single_line_signature_not_confused_with_prose(self) -> None:
+        """Legitimate prose that contains parentheses must survive cleaning."""
+        from llm.utils import _clean_docstring
+
+        # These should NOT be treated as signature echoes
+        prose1 = "Processes data (with optional filtering)."
+        assert _clean_docstring(prose1) == prose1
+        prose2 = "Calls evaluate(x) and returns result."
+        assert _clean_docstring(prose2) == prose2
+        text = "Do something useful.\n\nArgs:\n    x: The input."
+        assert _clean_docstring(text) == text
+
+
+# ---------------------------------------------------------------------------
+# Tests: new helper functions
+# ---------------------------------------------------------------------------
+
+class TestIsDegenerate:
+    def test_empty_string(self) -> None:
+        from llm.utils import _is_degenerate
+        assert _is_degenerate("") is True
+
+    def test_whitespace_only(self) -> None:
+        from llm.utils import _is_degenerate
+        assert _is_degenerate("   \n  ") is True
+
+    def test_backtick_spam(self) -> None:
+        from llm.utils import _is_degenerate
+        spam = " ".join(["```"] * 100)
+        assert _is_degenerate(spam) is True
+
+    def test_normal_text(self) -> None:
+        from llm.utils import _is_degenerate
+        assert _is_degenerate("Do something useful.") is False
+
+
+class TestStripEscapedQuotes:
+    def test_replaces_escaped_double_quotes(self) -> None:
+        from llm.utils import _strip_escaped_quotes
+        assert _strip_escaped_quotes(r'say \"hello\"') == 'say "hello"'
+
+    def test_replaces_escaped_single_quotes(self) -> None:
+        from llm.utils import _strip_escaped_quotes
+        assert _strip_escaped_quotes(r"it\'s fine") == "it's fine"
+
+
+class TestConfidenceHeuristicNew:
+    def test_degenerate_returns_zero(self) -> None:
+        from llm.utils import _confidence_heuristic
+        spam = " ".join(["```"] * 50)
+        assert _confidence_heuristic(spam) == 0.0
+
+    def test_text_with_fence_markers_penalised(self) -> None:
+        from llm.utils import _confidence_heuristic
+        text = "```markdown\nSomething useful."
+        assert _confidence_heuristic(text) == pytest.approx(0.1)
+
+    def test_signature_echo_penalised(self) -> None:
+        from llm.utils import _confidence_heuristic
+        text = (
+            "transform_features(\n"
+            "    pl_df: pd.DataFrame,\n"
+            ") -> Tuple:\n"
+            "    Transforms features.\n"
+        )
+        assert _confidence_heuristic(text) == pytest.approx(0.1)
+
+    def test_single_line_signature_echo_returns_zero(self) -> None:
+        from llm.utils import _confidence_heuristic
+        text = "evaluate(subset, whitelist, num_cols, cat_cols, logger: PipelineLogger)"
+        assert _confidence_heuristic(text) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: confidence-based retry in _generate_for_node
+# ---------------------------------------------------------------------------
+
+class TestLowConfidenceRetry:
+    """Verify that _generate_for_node retries on low-confidence results."""
+
+    def test_low_confidence_triggers_retry(self, tmp_path: Path) -> None:
+        """When confidence < 0.5, the node generator retries up to max_retries."""
+        from phases.phase3_docstrings import _generate_for_node
+        from llm.fallback import FallbackRouter
+
+        # Provider always returns a minimal one-line response (confidence ≈ 0.33)
+        call_count = 0
+
+        class CountingProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                return "Does something."  # low confidence: only summary, no Args/Returns
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                text = self.generate(prompt)
+                from llm.utils import _confidence_heuristic
+                return text, _confidence_heuristic(text)
+
+        provider = CountingProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo():\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        result = _generate_for_node(
+            node=node,
+            source_lines=source_lines,
+            router=router,
+            caller_map={},
+            callee_map={},
+            max_retries=2,
+        )
+        # Should have been called 3 times (initial + 2 retries), then accepted
+        assert call_count == 3
+        # The result is a DocstringEntry (accepted on final attempt regardless)
+        from models.schemas import DocstringEntry
+        assert isinstance(result, DocstringEntry)
+        assert result.retries == 2
+
+    def test_high_confidence_no_retry(self, tmp_path: Path) -> None:
+        """When confidence >= 0.5, no retry is triggered."""
+        from phases.phase3_docstrings import _generate_for_node
+        from llm.fallback import FallbackRouter
+
+        call_count = 0
+
+        class HighConfProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                return _CANNED_DOCSTRING
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                from llm.utils import _confidence_heuristic
+                text = self.generate(prompt)
+                return text, _confidence_heuristic(text)
+
+        provider = HighConfProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo():\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        result = _generate_for_node(
+            node=node,
+            source_lines=source_lines,
+            router=router,
+            caller_map={},
+            callee_map={},
+            max_retries=2,
+        )
+        assert call_count == 1  # no retry needed
+        from models.schemas import DocstringEntry
+        assert isinstance(result, DocstringEntry)
+        assert result.retries == 0
+
+    def test_signature_echo_triggers_failure(self, tmp_path: Path) -> None:
+        """A single-line signature echo is cleaned to empty, producing a failure."""
+        from phases.phase3_docstrings import _generate_for_node
+        from llm.fallback import FallbackRouter
+        from models.schemas import DocstringFailure
+
+        call_count = 0
+
+        class SigEchoProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                # Mimic the bug: LLM echoes the function signature
+                return "evaluate(subset, whitelist, num_cols, cat_cols, logger: PipelineLogger)"
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                text = self.generate(prompt)
+                from llm.utils import _confidence_heuristic
+                return text, _confidence_heuristic(text)
+
+        provider = SigEchoProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def evaluate(subset):\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="evaluate",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        result = _generate_for_node(
+            node=node,
+            source_lines=source_lines,
+            router=router,
+            caller_map={},
+            callee_map={},
+            max_retries=2,
+        )
+        # Cleaned to empty on every attempt → retries exhausted → DocstringFailure
+        assert call_count == 3  # initial + 2 retries
+        assert isinstance(result, DocstringFailure)
+        assert result.error_type == "malformed_response"
+
+    def test_connection_error_skips_retries(self, tmp_path: Path) -> None:
+        """ConnectionError from both providers should break the retry loop immediately."""
+        from phases.phase3_docstrings import _generate_for_node
+        from llm.fallback import FallbackRouter
+        from models.schemas import DocstringFailure
+
+        call_count = 0
+
+        class ConnErrProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                raise ConnectionError("server down")
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                raise ConnectionError("server down")
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                return self.generate(prompt, **kwargs), 0.0
+
+        provider = ConnErrProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo():\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        result = _generate_for_node(
+            node=node,
+            source_lines=source_lines,
+            router=router,
+            caller_map={},
+            callee_map={},
+            max_retries=2,
+        )
+        # Should NOT retry — breaks immediately on provider unavailability
+        assert call_count == 1
+        assert isinstance(result, DocstringFailure)
+        assert result.error_type == "provider_unavailable"
+
+    def test_runtime_error_skips_retries(self, tmp_path: Path) -> None:
+        """RuntimeError (both providers failed) should break retry loop immediately."""
+        from phases.phase3_docstrings import _generate_for_node
+        from llm.fallback import FallbackRouter
+        from models.schemas import DocstringFailure
+
+        primary = RaisingLLMProvider(ConnectionError("primary down"))
+        fallback = RaisingLLMProvider(ConnectionError("fallback down"))
+        router = FallbackRouter(primary=primary, fallback=fallback, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo():\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        result = _generate_for_node(
+            node=node,
+            source_lines=source_lines,
+            router=router,
+            caller_map={},
+            callee_map={},
+            max_retries=2,
+        )
+        # RuntimeError re-raised from fallback (ConnectionError) → breaks immediately
+        assert isinstance(result, DocstringFailure)
+        assert result.error_type == "provider_unavailable"
+
+
+class TestNodeAsyncTimeout:
+    """Verify that per-node async timeout produces a DocstringFailure."""
+
+    def test_slow_node_times_out(self, tmp_path: Path) -> None:
+        """A node that exceeds the timeout should be recorded as a failure."""
+        import asyncio
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        from phases.phase3_docstrings import _process_node_async
+        from models.schemas import DocstringFailure
+
+        class SlowProvider(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                time.sleep(5)  # deliberately slow
+                return _CANNED_DOCSTRING
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                text = self.generate(prompt, **kwargs)
+                return text, 0.9
+
+        provider = SlowProvider()
+        router = FallbackRouter(primary=provider, fallback=None, confidence_threshold=0.7)
+
+        py_file = tmp_path / "sample.py"
+        py_file.write_text("def foo():\n    pass\n")
+        node = ASTNode(
+            file_path=str(py_file),
+            node_type=NodeType.FUNCTION,
+            name="foo",
+            line_start=1,
+            line_end=2,
+        )
+        source_lines = py_file.read_text().splitlines(keepends=True)
+
+        async def _run() -> DocstringFailure:
+            sem = asyncio.Semaphore(1)
+            executor = ThreadPoolExecutor(max_workers=1)
+            try:
+                return await _process_node_async(
+                    node,
+                    source_lines,
+                    router,
+                    {},
+                    {},
+                    0,  # max_retries
+                    sem,
+                    executor,
+                    node_timeout=1,  # 1 second — should timeout
+                )
+            finally:
+                executor.shutdown(wait=False)
+
+        result = asyncio.run(_run())
+        assert isinstance(result, DocstringFailure)
+        assert result.error_type == "timeout"
+        assert "timed out" in result.reason
+
 
 # ---------------------------------------------------------------------------
 # Tests: OllamaProvider
@@ -326,6 +811,41 @@ class TestOllamaProvider:
 
         assert result == {"key": "value"}
 
+    def test_unreachable_server_raises_connection_error_immediately(self) -> None:
+        """When health check fails, generate() raises ConnectionError immediately."""
+        with patch("requests.get", side_effect=ConnectionError("refused")):
+            from llm.ollama_provider import OllamaProvider
+
+            provider = OllamaProvider()
+            assert not provider._server_reachable
+
+        with pytest.raises(ConnectionError, match="unreachable during init"):
+            provider.generate("prompt")
+
+    def test_connection_error_during_post_marks_server_unreachable(self) -> None:
+        """A ConnectionError during a POST request should flag server as down."""
+        import requests as req_lib
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+
+        with (
+            patch("requests.get", return_value=mock_resp),
+            patch(
+                "requests.post",
+                side_effect=req_lib.exceptions.ConnectionError("reset"),
+            ),
+        ):
+            from llm.ollama_provider import OllamaProvider
+
+            provider = OllamaProvider()
+            assert provider._server_reachable  # health check passed
+
+            with pytest.raises(ConnectionError):
+                provider.generate("prompt")
+
+            assert not provider._server_reachable
+
 
 # ---------------------------------------------------------------------------
 # Tests: FallbackRouter
@@ -397,6 +917,160 @@ class TestFallbackRouter:
 
         with pytest.raises(Exception):
             router.generate_with_fallback("p")
+
+    # --- Circuit-breaker tests ---
+
+    def test_connection_error_disables_fallback_immediately(self) -> None:
+        """A ConnectionError from the fallback should trip the circuit breaker."""
+        primary = FakeLLMProvider(_LOW_CONFIDENCE_DOCSTRING)
+        fallback = RaisingLLMProvider(ConnectionError("refused"))
+        router = FallbackRouter(primary, fallback, confidence_threshold=0.9)
+
+        # First call: fallback tried, fails with ConnectionError → disabled
+        text, _, _, fallback_used = router.generate_with_fallback("p")
+        assert not fallback_used  # fell back to primary result
+        assert router.fallback_disabled
+
+        # Second call: fallback NOT tried (circuit open), returns primary
+        text2, _, _, fallback_used2 = router.generate_with_fallback("p2")
+        assert not fallback_used2
+        assert text2 == _LOW_CONFIDENCE_DOCSTRING
+
+    def test_consecutive_failures_disable_fallback(self) -> None:
+        """Non-connection errors disable fallback after threshold consecutive failures."""
+        primary = FakeLLMProvider(_LOW_CONFIDENCE_DOCSTRING)
+        fallback = RaisingLLMProvider(RuntimeError("model error"))
+        threshold = 3
+        router = FallbackRouter(
+            primary, fallback,
+            confidence_threshold=0.9,
+            circuit_breaker_threshold=threshold,
+        )
+
+        # Failures 1 and 2: fallback still enabled
+        for i in range(threshold - 1):
+            router.generate_with_fallback(f"p{i}")
+            assert not router.fallback_disabled, f"Should not be disabled after {i + 1} failures"
+
+        # Failure 3: reaches threshold → circuit opens
+        router.generate_with_fallback("final")
+        assert router.fallback_disabled
+
+    def test_successful_fallback_resets_failure_counter(self) -> None:
+        """A successful fallback call should reset the failure counter."""
+        call_count = 0
+
+        class AlternatingProvider(BaseLLMProvider):
+            """Fails on first N calls, then succeeds."""
+            def __init__(self, fail_count: int) -> None:
+                self._fail_count = fail_count
+                self.calls: list[str] = []
+
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                self.calls.append(prompt)
+                if call_count <= self._fail_count:
+                    raise RuntimeError("temporary")
+                return _CANNED_DOCSTRING
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                return {}
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                text = self.generate(prompt, **kwargs)
+                from llm.utils import _confidence_heuristic
+                return text, _confidence_heuristic(text)
+
+        fail_count = 2
+        primary = FakeLLMProvider(_LOW_CONFIDENCE_DOCSTRING)
+        fallback = AlternatingProvider(fail_count=fail_count)
+        router = FallbackRouter(
+            primary, fallback,
+            confidence_threshold=0.9,
+            circuit_breaker_threshold=3,
+        )
+
+        # First N calls fail on the fallback side
+        for _ in range(fail_count):
+            router.generate_with_fallback("x")
+        assert not router.fallback_disabled
+        assert router._consecutive_fallback_failures == fail_count
+
+        # Next call succeeds (call_count > fail_count) → counter resets
+        _, _, _, fallback_used = router.generate_with_fallback("c")
+        assert fallback_used
+        assert router._consecutive_fallback_failures == 0
+        assert not router.fallback_disabled
+
+    def test_oserror_subclass_disables_fallback(self) -> None:
+        """OSError subclasses (requests.exceptions.ConnectionError) trip the breaker."""
+        primary = FakeLLMProvider(_LOW_CONFIDENCE_DOCSTRING)
+        fallback = RaisingLLMProvider(OSError("network unreachable"))
+        router = FallbackRouter(primary, fallback, confidence_threshold=0.9)
+
+        router.generate_with_fallback("p")
+        assert router.fallback_disabled
+
+    # --- Primary circuit-breaker tests ---
+
+    def test_connection_error_disables_primary_immediately(self) -> None:
+        """A ConnectionError from the primary should trip its circuit breaker."""
+        primary = RaisingLLMProvider(ConnectionError("refused"))
+        fallback = FakeLLMProvider(_CANNED_DOCSTRING)
+        router = FallbackRouter(primary, fallback, confidence_threshold=0.7)
+
+        # First call: primary fails with ConnectionError → disabled, fallback used
+        text, _, _, fallback_used = router.generate_with_fallback("p")
+        assert fallback_used
+        assert router.primary_disabled
+        assert text == _CANNED_DOCSTRING
+
+        # Second call: primary skipped entirely, fallback used directly
+        text2, _, _, fallback_used2 = router.generate_with_fallback("p2")
+        assert fallback_used2
+        assert text2 == _CANNED_DOCSTRING
+
+    def test_primary_circuit_breaker_skips_primary_calls(self) -> None:
+        """Once primary is disabled, its generate method must not be called."""
+        call_count = 0
+
+        class CountingRaiser(BaseLLMProvider):
+            def generate(self, prompt: str, **kwargs: Any) -> str:
+                nonlocal call_count
+                call_count += 1
+                raise ConnectionError("down")
+
+            def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
+                raise ConnectionError("down")
+
+            def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
+                nonlocal call_count
+                call_count += 1
+                raise ConnectionError("down")
+
+        primary = CountingRaiser()
+        fallback = FakeLLMProvider(_CANNED_DOCSTRING)
+        router = FallbackRouter(primary, fallback, confidence_threshold=0.7)
+
+        # First call triggers primary failure → circuit opens
+        router.generate_with_fallback("p1")
+        assert call_count == 1
+        assert router.primary_disabled
+
+        # Subsequent calls must NOT invoke the primary
+        router.generate_with_fallback("p2")
+        router.generate_with_fallback("p3")
+        assert call_count == 1  # still only the first call
+
+    def test_non_connection_primary_error_does_not_disable(self) -> None:
+        """Non-connection errors from primary should not trip the circuit breaker."""
+        primary = RaisingLLMProvider(ValueError("bad input"))
+        fallback = FakeLLMProvider(_CANNED_DOCSTRING)
+        router = FallbackRouter(primary, fallback, confidence_threshold=0.7)
+
+        router.generate_with_fallback("p")
+        assert not router.primary_disabled  # ValueError is not a connection error
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +1155,19 @@ class TestPhase3Integration:
         assert len(fake.calls) >= 1
         combined = " ".join(fake.calls)
         assert "Called by:" in combined
+
+    def test_prompt_requests_google_style_docstring(self, tmp_path: Path) -> None:
+        """The prompt should explicitly ask for Google-style docstring sections."""
+        fake = FakeLLMProvider()
+        artifacts = _make_phase_artifacts(tmp_path)
+        self._run_phase3_with_fake(artifacts, str(tmp_path / "arts"), provider=fake)
+
+        combined = " ".join(fake.calls)
+        assert "Google" in combined
+        assert "Args:" in combined
+        assert "Returns:" in combined
+        assert "Raises:" in combined
+        assert "Yields:" in combined
 
     def test_error_recorded_as_failure_when_file_missing(self, tmp_path: Path) -> None:
         """Nodes pointing to a non-existent file should produce a DocstringFailure."""

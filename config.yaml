@@ -30,9 +30,11 @@ output:
 
 llm:
   # Active provider: "ollama" | "huggingface"
-  # Switch to "huggingface" when running in Google Colab or any environment
-  # where Ollama is unavailable but pip packages work.
-  provider: "huggingface"
+  # Ollama is the primary provider.  When it is unavailable (e.g. in Google
+  # Colab), the circuit breaker in FallbackRouter detects the connection
+  # failure and automatically falls back to HuggingFace for all subsequent
+  # requests — no manual config change needed.
+  provider: "ollama"
 
   ollama:
     model_name: "qwen2.5-coder:7b"
@@ -46,14 +48,14 @@ llm:
 
   fallback:
     enabled: true
-    provider: "ollama"   # provider to use as fallback
+    provider: "huggingface"   # used when Ollama is unreachable
     confidence_threshold: 0.7
 
 docstring:
   # Legacy config kept for backwards compatibility with phase3_docstrings.py.
   # New code should use the top-level "llm" section above.
-  primary_provider: "huggingface"
-  fallback_provider: "ollama"
+  primary_provider: "ollama"
+  fallback_provider: "huggingface"
   confidence_threshold: 0.7
   max_retries: 2
   concurrency: 4
