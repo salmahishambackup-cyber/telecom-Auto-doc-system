@@ -188,7 +188,7 @@ _SINGLE_LINE_SIGNATURE_RE = re.compile(
     r"^\s*\w+\s*\("           # identifier + opening paren
     r"[^)]*"                   # param text (anything except closing paren)
     r"\)"                      # closing paren
-    r"(?:\s*->[\s\S]*?)?"      # optional return type annotation
+    r"(?:\s*->[^\n]*)?"        # optional return type annotation (single line)
     r"\s*:?\s*$",              # optional trailing colon + whitespace
 )
 

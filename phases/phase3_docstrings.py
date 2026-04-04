@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -42,8 +43,13 @@ _LOW_CONFIDENCE_THRESHOLD: float = 0.5
 _DOCSTRING_SYSTEM = (
     "You are a technical documentation expert.  Write a concise Google-style "
     "Python docstring for the provided code snippet.  Output ONLY the docstring "
-    "text (without the surrounding triple-quotes).  Include a one-line summary, "
-    "then (if applicable) Args:, Returns:, and Raises: sections.\n\n"
+    "text (without the surrounding triple-quotes).\n\n"
+    "Follow the Google Python Style Guide for docstrings:\n"
+    "- First line: a concise one-line summary ending with a period.\n"
+    "- If the function has arguments, include an 'Args:' section.\n"
+    "- If the function returns a value, include a 'Returns:' section.\n"
+    "- If the function raises exceptions, include a 'Raises:' section.\n"
+    "- If the function yields values, include a 'Yields:' section instead of 'Returns:'.\n\n"
     "IMPORTANT: Do NOT output any Python code, function definitions, class "
     "definitions, or import statements.  Do NOT repeat the source code.  "
     "Output ONLY the plain-text docstring content."
@@ -309,67 +315,57 @@ def _generate_module_docstring(
 
 
 # ---------------------------------------------------------------------------
-# Async worker for file-level parallelism
+# Async worker for node-level parallelism
 # ---------------------------------------------------------------------------
 
-async def _process_file(
-    file_path: str,
-    nodes: list[ASTNode],
+def _read_source_file(file_path: str) -> tuple[str, list[str]] | None:
+    """Read a source file and return ``(source, source_lines)`` or ``None``."""
+    try:
+        source = Path(file_path).read_text(encoding="utf-8", errors="replace")
+        return source, source.splitlines(keepends=True)
+    except OSError as exc:
+        logger.warning("Cannot read %s: %s", file_path, exc)
+        return None
+
+
+async def _process_node_async(
+    node: ASTNode,
+    source_lines: list[str],
     router: FallbackRouter,
     caller_map: dict[str, list[str]],
     callee_map: dict[str, list[str]],
     max_retries: int,
     semaphore: asyncio.Semaphore,
-) -> tuple[list[DocstringEntry], list[DocstringFailure], ModuleDocstring | None]:
-    """Process all nodes in a single file, respecting the concurrency semaphore."""
+    executor: ThreadPoolExecutor,
+) -> DocstringEntry | DocstringFailure:
+    """Generate a docstring for a single node, respecting the semaphore."""
     async with semaphore:
-        entries: list[DocstringEntry] = []
-        failures: list[DocstringFailure] = []
-        module_doc: ModuleDocstring | None = None
-
-        # Read source file
-        try:
-            source = Path(file_path).read_text(encoding="utf-8", errors="replace")
-            source_lines = source.splitlines(keepends=True)
-        except OSError as exc:
-            logger.warning("Cannot read %s: %s", file_path, exc)
-            for node in nodes:
-                failures.append(
-                    DocstringFailure(
-                        function_id=_make_function_id(node),
-                        file_path=node.file_path,
-                        function_name=node.name,
-                        reason=str(exc),
-                        provider=type(router.primary).__name__,
-                        error_type="file_read_error",
-                    )
-                )
-            return entries, failures, None
-
-        # Generate docstrings for each node (run in thread pool to avoid blocking)
         loop = asyncio.get_running_loop()
-        for node in nodes:
-            result = await loop.run_in_executor(
-                None,
-                _generate_for_node,
-                node,
-                source_lines,
-                router,
-                caller_map,
-                callee_map,
-                max_retries,
-            )
-            if isinstance(result, DocstringEntry):
-                entries.append(result)
-            else:
-                failures.append(result)
-
-        # Module docstring
-        module_doc = await loop.run_in_executor(
-            None, _generate_module_docstring, file_path, source, router
+        return await loop.run_in_executor(
+            executor,
+            _generate_for_node,
+            node,
+            source_lines,
+            router,
+            caller_map,
+            callee_map,
+            max_retries,
         )
 
-        return entries, failures, module_doc
+
+async def _process_module_async(
+    file_path: str,
+    source: str,
+    router: FallbackRouter,
+    semaphore: asyncio.Semaphore,
+    executor: ThreadPoolExecutor,
+) -> ModuleDocstring | None:
+    """Generate a module-level docstring, respecting the semaphore."""
+    async with semaphore:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            executor, _generate_module_docstring, file_path, source, router,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -461,24 +457,70 @@ def run_phase3(*, config: dict[str, Any], artifacts: PhaseArtifacts) -> None:
 
     async def _run_all() -> None:
         semaphore = asyncio.Semaphore(concurrency)
-        tasks = [
-            _process_file(
-                file_path,
-                nodes,
-                router,
-                caller_map,
-                callee_map,
-                max_retries,
-                semaphore,
+        executor = ThreadPoolExecutor(max_workers=concurrency)
+
+        # Pre-read source files (I/O) and build per-node tasks
+        node_tasks: list[asyncio.Task[DocstringEntry | DocstringFailure]] = []
+        module_tasks: list[asyncio.Task[ModuleDocstring | None]] = []
+
+        for file_path, nodes in nodes_by_file.items():
+            result = _read_source_file(file_path)
+            if result is None:
+                # File unreadable — record failures for every node
+                for node in nodes:
+                    all_failures.append(
+                        DocstringFailure(
+                            function_id=_make_function_id(node),
+                            file_path=node.file_path,
+                            function_name=node.name,
+                            reason=f"Cannot read {file_path}",
+                            provider=type(router.primary).__name__,
+                            error_type="file_read_error",
+                        )
+                    )
+                continue
+
+            source, source_lines = result
+
+            for node in nodes:
+                node_tasks.append(
+                    asyncio.create_task(
+                        _process_node_async(
+                            node,
+                            source_lines,
+                            router,
+                            caller_map,
+                            callee_map,
+                            max_retries,
+                            semaphore,
+                            executor,
+                        )
+                    )
+                )
+
+            module_tasks.append(
+                asyncio.create_task(
+                    _process_module_async(
+                        file_path, source, router, semaphore, executor,
+                    )
+                )
             )
-            for file_path, nodes in nodes_by_file.items()
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=False)
-        for entries, failures, mod_doc in results:
-            all_entries.extend(entries)
-            all_failures.extend(failures)
+
+        # Await all node tasks
+        node_results = await asyncio.gather(*node_tasks, return_exceptions=False)
+        for res in node_results:
+            if isinstance(res, DocstringEntry):
+                all_entries.append(res)
+            else:
+                all_failures.append(res)
+
+        # Await all module tasks
+        mod_results = await asyncio.gather(*module_tasks, return_exceptions=False)
+        for mod_doc in mod_results:
             if mod_doc is not None:
                 all_module_docs.append(mod_doc)
+
+        executor.shutdown(wait=False)
 
     # In Jupyter / Colab an event loop is already running, so plain
     # ``asyncio.run()`` raises RuntimeError.  Use *nest_asyncio* to patch

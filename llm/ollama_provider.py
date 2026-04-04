@@ -13,9 +13,19 @@ from llm.utils import _confidence_heuristic
 
 logger = logging.getLogger(__name__)
 
+# Seconds to wait during the one-time health check at init.
+_HEALTH_CHECK_TIMEOUT: int = 3
+
 
 class OllamaProvider(BaseLLMProvider):
-    """LLM provider backed by a locally-running Ollama instance."""
+    """LLM provider backed by a locally-running Ollama instance.
+
+    On construction a fast health check is performed against the ``/api/tags``
+    endpoint.  If the server is unreachable the provider still initialises
+    (so the fallback router can try it later) but ``generate()`` will
+    immediately raise ``ConnectionError`` instead of blocking on a doomed
+    HTTP request.
+    """
 
     def __init__(
         self,
@@ -26,15 +36,20 @@ class OllamaProvider(BaseLLMProvider):
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self._server_reachable: bool = True
 
-        # Health check — log a warning if the server is unreachable, don't crash.
+        # Fast health check — short timeout to avoid blocking startup.
         try:
-            resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            resp = requests.get(
+                f"{self.base_url}/api/tags", timeout=_HEALTH_CHECK_TIMEOUT,
+            )
             resp.raise_for_status()
             logger.debug("Ollama health check OK at %s", self.base_url)
         except Exception as exc:
+            self._server_reachable = False
             logger.warning(
-                "Ollama server unreachable at %s: %s — continuing anyway.",
+                "Ollama server unreachable at %s: %s — "
+                "generate() will raise immediately until the server is back.",
                 self.base_url,
                 exc,
             )
@@ -42,11 +57,16 @@ class OllamaProvider(BaseLLMProvider):
     def generate(self, prompt: str, **kwargs: Any) -> str:
         """Send a prompt to Ollama and return the response text.
 
-        Raises
-        ------
-        TimeoutError
-            If the request exceeds the configured timeout.
+        Raises:
+            ConnectionError: If the server was unreachable during the health
+                check or the request fails due to a connection issue.
+            TimeoutError: If the request exceeds the configured timeout.
         """
+        if not self._server_reachable:
+            raise ConnectionError(
+                f"Ollama server at {self.base_url} was unreachable during init"
+            )
+
         t0 = time.monotonic()
         payload = {
             "model": self.model_name,
@@ -60,6 +80,11 @@ class OllamaProvider(BaseLLMProvider):
                 timeout=self.timeout,
             )
             resp.raise_for_status()
+        except requests.exceptions.ConnectionError as exc:
+            self._server_reachable = False
+            raise ConnectionError(
+                f"Ollama server at {self.base_url} is unreachable"
+            ) from exc
         except requests.exceptions.Timeout as exc:
             raise TimeoutError(
                 f"Ollama request timed out after {self.timeout}s"
@@ -81,7 +106,18 @@ class OllamaProvider(BaseLLMProvider):
         return response_text
 
     def generate_structured(self, prompt: str, schema: type, **kwargs: Any) -> dict:
-        """Generate text and parse JSON from the response."""
+        """Generate text and parse JSON from the response.
+
+        Args:
+            prompt: The full input prompt to send to the model.
+            schema: Expected schema type (kept for interface compatibility).
+
+        Returns:
+            Parsed JSON response from the model.
+
+        Raises:
+            json.JSONDecodeError: If the model output cannot be parsed as JSON.
+        """
         text = self.generate(prompt, **kwargs)
         # Extract JSON from the response (handle markdown code blocks)
         text = text.strip()
@@ -104,10 +140,9 @@ class OllamaProvider(BaseLLMProvider):
     def generate_with_confidence(self, prompt: str, **kwargs: Any) -> tuple[str, float]:
         """Generate text and return it with a confidence score.
 
-        Returns
-        -------
-        tuple[str, float]
-            ``(response_text, confidence)`` where confidence is in [0, 1].
+        Returns:
+            A ``(response_text, confidence)`` tuple where *confidence* is in
+            the range [0, 1].
         """
         text = self.generate(prompt, **kwargs)
         confidence = _confidence_heuristic(text)

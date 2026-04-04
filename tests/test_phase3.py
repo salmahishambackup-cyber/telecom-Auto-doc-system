@@ -669,6 +669,41 @@ class TestOllamaProvider:
 
         assert result == {"key": "value"}
 
+    def test_unreachable_server_raises_connection_error_immediately(self) -> None:
+        """When health check fails, generate() raises ConnectionError immediately."""
+        with patch("requests.get", side_effect=ConnectionError("refused")):
+            from llm.ollama_provider import OllamaProvider
+
+            provider = OllamaProvider()
+            assert not provider._server_reachable
+
+        with pytest.raises(ConnectionError, match="unreachable during init"):
+            provider.generate("prompt")
+
+    def test_connection_error_during_post_marks_server_unreachable(self) -> None:
+        """A ConnectionError during a POST request should flag server as down."""
+        import requests as req_lib
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+
+        with (
+            patch("requests.get", return_value=mock_resp),
+            patch(
+                "requests.post",
+                side_effect=req_lib.exceptions.ConnectionError("reset"),
+            ),
+        ):
+            from llm.ollama_provider import OllamaProvider
+
+            provider = OllamaProvider()
+            assert provider._server_reachable  # health check passed
+
+            with pytest.raises(ConnectionError):
+                provider.generate("prompt")
+
+            assert not provider._server_reachable
+
 
 # ---------------------------------------------------------------------------
 # Tests: FallbackRouter
@@ -805,23 +840,22 @@ class TestFallbackRouter:
                 from llm.utils import _confidence_heuristic
                 return text, _confidence_heuristic(text)
 
+        fail_count = 2
         primary = FakeLLMProvider(_LOW_CONFIDENCE_DOCSTRING)
-        # Fails twice, then succeeds
-        fallback = AlternatingProvider(fail_count=2)
+        fallback = AlternatingProvider(fail_count=fail_count)
         router = FallbackRouter(
             primary, fallback,
             confidence_threshold=0.9,
             circuit_breaker_threshold=3,
         )
 
-        # Two failures
-        router.generate_with_fallback("a")
-        router.generate_with_fallback("b")
+        # First N calls fail on the fallback side
+        for _ in range(fail_count):
+            router.generate_with_fallback("x")
         assert not router.fallback_disabled
-        assert router._consecutive_fallback_failures == 2
+        assert router._consecutive_fallback_failures == fail_count
 
-        # Third call succeeds → counter resets
-        call_count = 2  # already failed twice
+        # Next call succeeds (call_count > fail_count) → counter resets
         _, _, _, fallback_used = router.generate_with_fallback("c")
         assert fallback_used
         assert router._consecutive_fallback_failures == 0
@@ -919,6 +953,19 @@ class TestPhase3Integration:
         assert len(fake.calls) >= 1
         combined = " ".join(fake.calls)
         assert "Called by:" in combined
+
+    def test_prompt_requests_google_style_docstring(self, tmp_path: Path) -> None:
+        """The prompt should explicitly ask for Google-style docstring sections."""
+        fake = FakeLLMProvider()
+        artifacts = _make_phase_artifacts(tmp_path)
+        self._run_phase3_with_fake(artifacts, str(tmp_path / "arts"), provider=fake)
+
+        combined = " ".join(fake.calls)
+        assert "Google" in combined
+        assert "Args:" in combined
+        assert "Returns:" in combined
+        assert "Raises:" in combined
+        assert "Yields:" in combined
 
     def test_error_recorded_as_failure_when_file_missing(self, tmp_path: Path) -> None:
         """Nodes pointing to a non-existent file should produce a DocstringFailure."""
